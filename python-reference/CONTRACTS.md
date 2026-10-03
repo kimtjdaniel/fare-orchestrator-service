@@ -16,7 +16,7 @@ the person on the other side (and updating this file).
   "group_name": "Fall trip",
   "sender_id": "14165551234@c.us",
   "sender_name": "Jordan",
-  "text": "@Yate figure this out",
+  "text": "@Fare figure this out",
   "tagged": true,
   "timestamp": 1790000000,
   "message_id": "3EB0C767D26A1D8A5B21"

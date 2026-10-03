@@ -1,4 +1,4 @@
-// Command yate-brain is the FastAPI-equivalent HTTP entry point.   Run:  go run .
+// Command fare-brain is the FastAPI-equivalent HTTP entry point.   Run:  go run .
 //
 // Endpoints
 //
@@ -53,7 +53,7 @@ func main() {
 		llmClient = llm.NewClaudeLLM(cfg.AnthropicAPIKey, cfg.AnthropicModel, cfg.LLMCacheDir)
 	}
 
-	messenger, err := messaging.MakeMessenger(cfg.MessagingBackend, cfg.RobotURL, cfg.TelegramBotToken)
+	messenger, err := messaging.MakeMessenger(cfg.MessagingBackend, cfg.RobotURL, cfg.RobotToken, cfg.TelegramBotToken)
 	if err != nil {
 		slog.Error("messaging setup failed", "err", err)
 		os.Exit(1)
@@ -81,7 +81,7 @@ func main() {
 		browserKind = "mock"
 	}
 	slog.Info("brain up", "store", storeKind, "llm", llmKind, "travel", travelKind,
-		"browser", browserKind, "messaging", cfg.MessagingBackend)
+		"browser", browserKind, "messaging", cfg.MessagingBackend, "robot_auth", cfg.RobotToken != "")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", healthHandler(cfg))

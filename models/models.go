@@ -2,7 +2,10 @@
 // CONTRACTS.md too.
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 func Now() time.Time {
 	return time.Now().UTC()
@@ -48,6 +51,8 @@ const (
 // ---------- incoming (from P2's messaging layer) ----------
 
 // IncomingMessage is what the WhatsApp robot / Telegram adapter POSTs to /webhook.
+// CONTRACTS.md is flat (group_id, sender_id). Older robot builds sent nested
+// chat/sender objects; UnmarshalJSON accepts both.
 type IncomingMessage struct {
 	GroupID    string `json:"group_id"`
 	GroupName  string `json:"group_name"`
@@ -57,6 +62,44 @@ type IncomingMessage struct {
 	Tagged     bool   `json:"tagged"`    // was the bot @mentioned?
 	Timestamp  int64  `json:"timestamp"` // unix seconds
 	MessageID  string `json:"message_id,omitempty"`
+}
+
+func (m *IncomingMessage) UnmarshalJSON(data []byte) error {
+	type flat IncomingMessage
+	var f flat
+	if err := json.Unmarshal(data, &f); err != nil {
+		return err
+	}
+	*m = IncomingMessage(f)
+	if m.GroupID != "" && m.SenderID != "" {
+		return nil
+	}
+	var nested struct {
+		Chat *struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"chat"`
+		Sender *struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"sender"`
+	}
+	if err := json.Unmarshal(data, &nested); err != nil {
+		return err
+	}
+	if m.GroupID == "" && nested.Chat != nil {
+		m.GroupID = nested.Chat.ID
+		if m.GroupName == "" {
+			m.GroupName = nested.Chat.Name
+		}
+	}
+	if m.SenderID == "" && nested.Sender != nil {
+		m.SenderID = nested.Sender.ID
+		if m.SenderName == "" {
+			m.SenderName = nested.Sender.Name
+		}
+	}
+	return nil
 }
 
 // ---------- stored records ----------

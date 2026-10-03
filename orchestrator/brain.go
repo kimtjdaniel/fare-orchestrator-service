@@ -32,7 +32,7 @@ import (
 	"yate-brain/tools"
 )
 
-const defaultLeadEmail = "demo@yate.travel"
+const defaultLeadEmail = "demo@fare.travel"
 
 // Fast paths: obvious replies are handled without an LLM call (faster + free).
 var (
@@ -174,7 +174,7 @@ func (b *Brain) Handle(ctx context.Context, m models.IncomingMessage) {
 
 func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	// Fallback mention detection: WhatsApp uses several ID formats for one account, so the
-	// robot's mentionedIds check can miss. Typed "@Yate" in the text always counts.
+	// robot's mentionedIds check can miss. Typed "@Fare" in the text always counts.
 	if !m.Tagged && b.mentionRe.MatchString(m.Text) {
 		m.Tagged = true
 	}

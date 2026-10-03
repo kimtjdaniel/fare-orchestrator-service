@@ -16,7 +16,7 @@ import httpx
 
 from .config import settings
 
-log = logging.getLogger("yate.messaging")
+log = logging.getLogger("fare.messaging")
 
 # Button = (label, payload). Payload comes back to /telegram/webhook as if the user typed it.
 Buttons = Optional[list[tuple[str, str]]]

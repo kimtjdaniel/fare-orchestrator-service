@@ -4,7 +4,7 @@
   python scripts/simulate.py --no-replay  # start from an empty chat
   python scripts/simulate.py --url http://localhost:8000   # send to a running server instead
 
-Interactive input format:   Name: message      (mention the bot with @Yate)
+Interactive input format:   Name: message      (mention the bot with @Fare)
 Uses your .env, so with MOCK_LLM=false it calls real Claude (cached in .llm_cache/).
 """
 import argparse

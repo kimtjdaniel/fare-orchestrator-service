@@ -10,7 +10,7 @@ Do sections 1–3 tonight if you can; they're the ones that block you tomorrow.
 Requires **Python 3.11–3.13** (Skyvern's SDK refuses other versions). Check with `python --version`.
 
 ```bash
-cd yate-brain
+cd python-reference
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env

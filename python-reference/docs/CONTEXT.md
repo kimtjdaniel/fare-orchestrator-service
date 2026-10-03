@@ -1,6 +1,6 @@
 # Project context (read on demand)
 
-Background for the Yate brain: the hackathon plan, who does what, why the code is shaped the way
+Background for the Fare brain: the hackathon plan, who does what, why the code is shaped the way
 it is, and what was verified in the docs. `CLAUDE.md` has the working rules; this file has the why.
 
 ---
@@ -46,7 +46,7 @@ are hard stops (everyone fixes the critical path if red); the demo path beats fe
 
 1. Group chat already open: Maya (Vancouver, wants beach), Jordan (Toronto, wants a food city,
    two date windows), Sam (Calgary, $800 max, busy one weekend).
-2. Jordan: "@Yate figure this out".
+2. Jordan: "@Fare figure this out".
 3. Agent replies within ~10s: overlapping dates, 2–3 destinations with trade-offs, cost per person,
    dashboard link. Dashboard updates live.
 4. Someone replies "1" → summary with flights per person, hotel, per-person totals, ✅/❌ buttons.
@@ -65,7 +65,7 @@ it are in `app/llm/mock_data.py`. Only Nov 20–23, 2026 works for all three.
   are official and support inline ✅/❌ buttons. Both sit behind `send()` and the same webhook payload.
 - **Stage-driven orchestration, not one free-roaming agent.** Each stage asks Claude for a specific
   JSON shape; code decides what happens next. More reliable on stage and makes the approval gate
-  impossible to bypass. The free-form tool loop is only used for questions ("@Yate is it warm there?").
+  impossible to bypass. The free-form tool loop is only used for questions ("@Fare is it warm there?").
 - **Structured outputs instead of forced tool calls.** Forced `tool_choice` isn't supported on
   Sonnet 5.5 / Opus 5.5 (found while reading docs on Oct 2).
 - **Chat messages built from templates.** Options, summary and confirmation text come from
@@ -109,7 +109,7 @@ Group → supergroup upgrades change the chat ID.
 `railway.json` sets the start command; Settings → Networking → Generate Domain for a public URL.
 
 **WhatsApp (whatsapp-web.js).** Accounts can appear under several ID formats, so mention detection
-by ID can miss; the brain also treats a typed "@Yate" as a mention.
+by ID can miss; the brain also treats a typed "@Fare" as a mention.
 
 ## 7. Risks and fallbacks
 

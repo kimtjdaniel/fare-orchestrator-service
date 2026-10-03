@@ -7,7 +7,7 @@ from pathlib import Path
 os.environ.update({
     "MOCK_LLM": "true", "MOCK_TRAVEL": "true", "MOCK_BROWSER": "true",
     "MOCK_BOOKING_DELAY": "0", "MESSAGING_BACKEND": "console", "DATABASE_URL": "",
-    "TELEGRAM_BOT_USERNAME": "yate_bot", "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_WEBHOOK_SECRET": "",
+    "TELEGRAM_BOT_USERNAME": "fare_bot", "TELEGRAM_BOT_TOKEN": "", "TELEGRAM_WEBHOOK_SECRET": "",
 })
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

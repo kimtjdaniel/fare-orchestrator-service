@@ -35,7 +35,7 @@ from .tools.flights import book_flight, search_flights
 from .tools.hotels import search_hotels
 from .tools.split import compute_split
 
-log = logging.getLogger("yate.brain")
+log = logging.getLogger("fare.brain")
 
 # Fast paths: obvious replies are handled without an LLM call (faster + free).
 CHOICE_ONLY = re.compile(r"^\s*(?:option\s*)?([1-3])\s*[.!]?\s*$", re.I)
@@ -104,7 +104,7 @@ class Brain:
 
     async def _handle(self, m: IncomingMessage) -> None:
         # Fallback mention detection: WhatsApp uses several ID formats for one account, so the
-        # robot's mentionedIds check can miss. Typed "@Yate" in the text always counts.
+        # robot's mentionedIds check can miss. Typed "@Fare" in the text always counts.
         if not m.tagged and MENTION.search(m.text):
             m = m.model_copy(update={"tagged": True})
         trip = await self.store.get_active_trip(m.group_id)

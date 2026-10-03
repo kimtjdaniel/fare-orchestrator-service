@@ -1,4 +1,4 @@
-# Yate brain — project instructions
+# Fare brain — project instructions
 
 24-hour hackathon project (Oct 3, 2026): an AI travel agent that sits in a group chat, reconciles
 friends' conflicting trip preferences, proposes options, waits for ✅, then books flights + hotel.

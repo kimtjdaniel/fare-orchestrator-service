@@ -1,4 +1,4 @@
-# Yate brain
+# Fare brain
 
 The FastAPI "brain" of the group-travel agent: reads the group chat, reconciles everyone's
 preferences with Claude, searches flights and hotels, waits for ✅, then books.

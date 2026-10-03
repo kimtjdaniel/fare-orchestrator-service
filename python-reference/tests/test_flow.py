@@ -45,7 +45,7 @@ def test_happy_path(kind, transcript):
         assert b.llm.calls == [], "chatter before the @mention must not spend LLM calls"
         assert b.messenger.outbox == []
 
-        await b.handle(msg(transcript["messages"][-1]))           # "@Yate figure this out"
+        await b.handle(msg(transcript["messages"][-1]))           # "@Fare figure this out"
         trip = await b.store.get_active_trip("demo-group")
         assert trip.state == S.AWAITING_CHOICE
         assert b.llm.calls == ["record_preferences", "propose_options"]
@@ -90,7 +90,7 @@ def test_cannot_approve_before_choosing(transcript):
     async def go():
         b = await make_brain("memory")
         await b.handle(msg(transcript["messages"][-1]))
-        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@Yate yes book it",
+        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@Fare yes book it",
                             "tagged": True}))
         trip = await b.store.get_active_trip("demo-group")
         assert trip.state == S.AWAITING_CHOICE
@@ -143,7 +143,7 @@ def test_revise_reproposes_options(transcript):
         await b.handle(msg(transcript["messages"][-1]))
         trip = await b.store.get_active_trip("demo-group")
         await b.handle(msg({"sender_id": "u_sam", "sender_name": "Sam",
-                            "text": "@Yate can we find something cheaper?", "tagged": True}))
+                            "text": "@Fare can we find something cheaper?", "tagged": True}))
         trip = await b.store.get_trip(trip.id)
         assert trip.state == S.AWAITING_CHOICE
         assert b.llm.calls == ["record_preferences", "propose_options", "interpret_reply", "propose_options"]
@@ -160,7 +160,7 @@ def test_revise_during_approval_goes_back_to_choice_then_reproposes(transcript):
         trip = await b.store.get_active_trip("demo-group")
         await b.handle(msg(transcript["followups"][0]))     # "1" -> AWAITING_APPROVAL
         await b.handle(msg({"sender_id": "u_sam", "sender_name": "Sam",
-                            "text": "@Yate actually something cheaper please", "tagged": True}))
+                            "text": "@Fare actually something cheaper please", "tagged": True}))
         trip = await b.store.get_trip(trip.id)
         assert trip.state == S.AWAITING_CHOICE
         assert await b.store.get_bookings(trip.id) == []
@@ -172,10 +172,10 @@ def test_cancel_then_new_trip_ignores_old_messages(transcript):
         b = await make_brain("memory")
         await b.handle(msg(transcript["messages"][-1]))
         first = await b.store.get_active_trip("demo-group")
-        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@Yate cancel this",
+        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@Fare cancel this",
                             "tagged": True}))
         assert (await b.store.get_trip(first.id)).state == S.CANCELLED
-        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@Yate new trip!",
+        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@Fare new trip!",
                             "tagged": True}))
         second = await b.store.get_active_trip("demo-group")
         assert second.id != first.id and second.history_start is not None
@@ -186,7 +186,7 @@ def test_typed_mention_counts_even_if_channel_missed_it(transcript):
     """WhatsApp ID formats vary, so the robot may send tagged=false for a real @mention."""
     async def go():
         b = await make_brain("memory")
-        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@yate figure this out"}))
+        await b.handle(msg({"sender_id": "u_j", "sender_name": "Jordan", "text": "@fare figure this out"}))
         assert (await b.store.get_active_trip("demo-group")).state == S.AWAITING_CHOICE
     run(go())
 

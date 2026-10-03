@@ -10,7 +10,7 @@ from anthropic.types import Message
 
 from .base import LLM, Handler
 
-log = logging.getLogger("yate.llm")
+log = logging.getLogger("fare.llm")
 
 
 class ClaudeLLM(LLM):

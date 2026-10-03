@@ -27,6 +27,7 @@ type Settings struct {
 
 	MessagingBackend      string
 	RobotURL              string
+	RobotToken            string
 	TelegramBotToken      string
 	TelegramBotUsername   string
 	TelegramWebhookSecret string
@@ -60,6 +61,15 @@ func getenv(name, def string) string {
 	return def
 }
 
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func intEnv(name string, def int) int {
 	v := getenv(name, "")
 	if v == "" {
@@ -86,7 +96,8 @@ func floatEnv(name string, def float64) float64 {
 
 // Load reads .env (if present) and returns the resolved Settings.
 func Load() *Settings {
-	_ = godotenv.Load()
+	// Overload so a local .env wins over an empty SERVICE_TOKEN inherited from the shell.
+	_ = godotenv.Overload()
 	return &Settings{
 		MockLLM:                 boolEnv("MOCK_LLM", true),
 		MockTravel:              boolEnv("MOCK_TRAVEL", true),
@@ -100,14 +111,15 @@ func Load() *Settings {
 		LLMCacheDir:     getenv("LLM_CACHE_DIR", ".llm_cache"),
 
 		MongoURI: getenv("MONGODB_URI", ""),
-		MongoDB:  getenv("MONGODB_DB", "yate"),
+		MongoDB:  getenv("MONGODB_DB", "fare"),
 
 		MessagingBackend:      getenv("MESSAGING_BACKEND", "console"),
 		RobotURL:              getenv("ROBOT_URL", "http://localhost:3000"),
+		RobotToken:            firstNonEmpty(getenv("ROBOT_TOKEN", ""), getenv("SERVICE_TOKEN", "")),
 		TelegramBotToken:      getenv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramBotUsername:   getenv("TELEGRAM_BOT_USERNAME", ""),
 		TelegramWebhookSecret: getenv("TELEGRAM_WEBHOOK_SECRET", ""),
-		BotName:               getenv("BOT_NAME", "Yate"),
+		BotName:               getenv("BOT_NAME", "Fare"),
 		Timezone:              getenv("TIMEZONE", "America/Vancouver"),
 
 		SkyvernAPIKey:    getenv("SKYVERN_API_KEY", ""),

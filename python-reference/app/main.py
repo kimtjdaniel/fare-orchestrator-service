@@ -24,7 +24,7 @@ from .orchestrator import Brain
 from .store import make_store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("yate")
+log = logging.getLogger("fare")
 
 
 @asynccontextmanager
@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
     await store.close()
 
 
-app = FastAPI(title="Yate brain", lifespan=lifespan)
+app = FastAPI(title="Fare brain", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 

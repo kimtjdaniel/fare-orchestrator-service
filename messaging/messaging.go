@@ -69,11 +69,12 @@ func joinStrings(ss []string, sep string) string {
 // rendered as a text hint.
 type RobotMessenger struct {
 	RobotURL   string
+	Token      string
 	HTTPClient *http.Client
 }
 
-func NewRobotMessenger(robotURL string) *RobotMessenger {
-	return &RobotMessenger{RobotURL: robotURL, HTTPClient: &http.Client{Timeout: 15 * time.Second}}
+func NewRobotMessenger(robotURL, token string) *RobotMessenger {
+	return &RobotMessenger{RobotURL: robotURL, Token: token, HTTPClient: &http.Client{Timeout: 15 * time.Second}}
 }
 
 func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons []Button) error {
@@ -84,7 +85,11 @@ func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons
 		}
 		text += "\n\n" + joinStrings(hints, "  ")
 	}
-	body, err := json.Marshal(map[string]string{"group_id": groupID, "text": text})
+	body, err := json.Marshal(map[string]string{
+		"group_id": groupID,
+		"chat_id":  groupID,
+		"text":     text,
+	})
 	if err != nil {
 		return err
 	}
@@ -93,6 +98,9 @@ func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons
 		return err
 	}
 	req.Header.Set("content-type", "application/json")
+	if m.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+m.Token)
+	}
 	resp, err := m.HTTPClient.Do(req)
 	if err != nil {
 		return err
@@ -148,12 +156,12 @@ func (m *TelegramMessenger) Send(ctx context.Context, groupID, text string, butt
 
 // ---------- factory ----------
 
-func MakeMessenger(backend, robotURL, telegramBotToken string) (Messenger, error) {
+func MakeMessenger(backend, robotURL, robotToken, telegramBotToken string) (Messenger, error) {
 	switch backend {
 	case "console":
 		return &ConsoleMessenger{}, nil
 	case "robot":
-		return NewRobotMessenger(robotURL), nil
+		return NewRobotMessenger(robotURL, robotToken), nil
 	case "telegram":
 		return NewTelegramMessenger(telegramBotToken), nil
 	default:

@@ -136,7 +136,7 @@ func smokeSchemas(cfg *config.Settings) {
 	printJSON(opts)
 
 	intent, err := c.Structured(ctx, prompts.InterpretSystem("AWAITING_CHOICE", "1. A; 2. B"),
-		[]llm.Message{{Role: "user", Content: "@Yate let's do the second one"}}, toSchema(prompts.InterpretReply))
+		[]llm.Message{{Role: "user", Content: "@Fare let's do the second one"}}, toSchema(prompts.InterpretReply))
 	if err != nil {
 		fail(err.Error())
 	}

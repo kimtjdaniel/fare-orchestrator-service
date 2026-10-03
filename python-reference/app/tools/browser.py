@@ -47,8 +47,8 @@ If the total shown is more than {hotel.total_price * 1.1:.0f} {hotel.currency}, 
 
 
 async def start_hotel_booking(hotel: HotelOffer, guests: int, lead_name: str,
-                              lead_email: str = "demo@yate.travel",
-                              title: str = "Yate hotel booking") -> tuple[str, Optional[str]]:
+                              lead_email: str = "demo@fare.travel",
+                              title: str = "Fare hotel booking") -> tuple[str, Optional[str]]:
     """Kick off the booking. Returns (run_id, live_url). Does not wait."""
     if settings.mock_browser:
         return "mock_run_" + "".join(random.choices(string.ascii_lowercase, k=8)), None

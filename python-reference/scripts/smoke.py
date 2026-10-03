@@ -77,7 +77,7 @@ async def schemas():
     print(json.dumps(opts, indent=2))
     out = await llm.structured(
         system=prompts.INTERPRET_SYSTEM.format(state="AWAITING_CHOICE", options="1. A; 2. B"),
-        messages=[{"role": "user", "content": "@Yate let's do the second one"}],
+        messages=[{"role": "user", "content": "@Fare let's do the second one"}],
         schema=prompts.INTERPRET_REPLY)
     ok(f"interpret_reply: {out}")
     print("\nTip: paste the record_preferences output into app/llm/mock_data.py to make mocks realistic.")

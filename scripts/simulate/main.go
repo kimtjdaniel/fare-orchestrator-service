@@ -4,7 +4,7 @@
 //	go run ./scripts/simulate --no-replay          # start from an empty chat
 //	go run ./scripts/simulate --url http://localhost:8000   # send to a running server instead
 //
-// Interactive input format:   Name: message      (mention the bot with @Yate)
+// Interactive input format:   Name: message      (mention the bot with @Fare)
 // Uses your .env, so with MOCK_LLM=false it calls real Claude (cached in LLM_CACHE_DIR).
 package main
 

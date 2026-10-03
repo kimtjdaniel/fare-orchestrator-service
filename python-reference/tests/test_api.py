@@ -26,7 +26,7 @@ def test_telegram_mention_parsing():
         "message_id": 7, "date": 1790000000,
         "chat": {"id": -100123, "type": "supergroup", "title": "Fall trip"},
         "from": {"id": 55, "first_name": "Jordan"},
-        "text": "@yate_bot figure this out",
+        "text": "@fare_bot figure this out",
         "entities": [{"type": "mention", "offset": 0, "length": 9}]}}
     m = telegram_to_incoming(update)
     assert m.tagged and m.group_id == "-100123" and m.sender_name == "Jordan" and m.message_id == "7"

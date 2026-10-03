@@ -29,7 +29,7 @@ class Settings:
     telegram_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
     telegram_bot_username: str = os.getenv("TELEGRAM_BOT_USERNAME", "")
     telegram_webhook_secret: str = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
-    bot_name: str = os.getenv("BOT_NAME", "Yate")
+    bot_name: str = os.getenv("BOT_NAME", "Fare")
     timezone: str = os.getenv("TIMEZONE", "America/Vancouver")
 
     skyvern_api_key: str = os.getenv("SKYVERN_API_KEY", "")
