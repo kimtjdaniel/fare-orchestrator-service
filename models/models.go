@@ -64,6 +64,15 @@ type IncomingMessage struct {
 	Timestamp    int64         `json:"timestamp"` // unix seconds
 	MessageID    string        `json:"message_id,omitempty"`
 	AgentID      string        `json:"agent_id,omitempty"`
+	Quoted       *QuotedMessage `json:"quoted,omitempty"`
+}
+
+// QuotedMessage is the WhatsApp message this inbound line is replying to.
+type QuotedMessage struct {
+	ID       string `json:"id"`
+	SenderID string `json:"sender_id"`
+	Text     string `json:"text"`
+	FromMe   bool   `json:"from_me"`
 }
 
 // GroupMember is one WhatsApp group participant as reported by the robot.

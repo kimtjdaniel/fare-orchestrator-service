@@ -48,8 +48,22 @@ func TestLooksLikeHotelAsk(t *testing.T) {
 	if !looksLikeHotelAsk("show us the hotel") {
 		t.Fatal("expected hotel ask")
 	}
+	if !looksLikeHotelAsk("can we see a picture?") {
+		t.Fatal("expected picture ask")
+	}
 	if looksLikeHotelAsk("what should we eat") {
 		t.Fatal("did not expect hotel ask")
+	}
+	m := models.IncomingMessage{
+		Text: "perfect, send it!",
+		Quoted: &models.QuotedMessage{Text: "Casa Linda in Amalfi. About C$149 a night, CAD.", FromMe: true},
+	}
+	trip := &models.Trip{Itinerary: map[string]any{"hotel": map[string]any{"name": "Casa Linda"}}}
+	if !wantsHotelPhoto(trip, m) {
+		t.Fatal("expected send-it after hotel caption")
+	}
+	if !looksLikeCheaperAsk("are there cheaper opptions? for flight?") {
+		t.Fatal("expected cheaper ask")
 	}
 }
 

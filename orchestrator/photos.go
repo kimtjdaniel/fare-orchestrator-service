@@ -2,9 +2,13 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"strings"
+	"time"
 
 	"fare-brain/formatting"
 	"fare-brain/messaging"
@@ -22,13 +26,25 @@ func (b *Brain) sendHotelPhoto(ctx context.Context, trip *models.Trip) error {
 	}
 	night := hotel.PricePerNight
 	caption := fmt.Sprintf("%s in %s. About %s a night, CAD.", hotel.Name, hotel.City, formatting.Money(&night))
-	if strings.TrimSpace(hotel.ImageURL) == "" {
-		return b.say(ctx, trip.GroupID, caption, nil)
+	imageURL := strings.TrimSpace(hotel.ImageURL)
+	if imageURL == "" {
+		imageURL = hotelImageForName(hotel.Name, hotel.City)
 	}
-	if err := b.Messenger.SendMedia(ctx, trip.GroupID, caption, messaging.Media{URL: hotel.ImageURL, Filename: "hotel.jpg"}); err != nil {
+	media := messaging.Media{URL: imageURL, Filename: "hotel.jpg", Mimetype: "image/jpeg"}
+	if b64, mime, ferr := fetchImageBase64(ctx, imageURL); ferr != nil {
+		slog.Warn("hotel photo download failed, sending url", "err", ferr, "url", imageURL)
+	} else {
+		media.DataBase64 = b64
+		media.URL = ""
+		if mime != "" {
+			media.Mimetype = mime
+		}
+	}
+	if err := b.Messenger.SendMedia(ctx, trip.GroupID, caption, media); err != nil {
 		slog.Warn("hotel photo send failed", "err", err)
 		return b.say(ctx, trip.GroupID, caption, nil)
 	}
+	slog.Info("hotel photo sent", "hotel", hotel.Name, "has_bytes", media.DataBase64 != "")
 	_, err = b.Store.SaveMessage(ctx, &models.Message{
 		GroupID: trip.GroupID, TripID: trip.ID, SenderID: "bot", SenderName: b.Config.BotName,
 		Text: caption, IsBot: true, SentAt: models.Now(),
@@ -80,4 +96,41 @@ func hotelImageForName(name, city string) string {
 	default:
 		return "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80"
 	}
+}
+
+func fetchImageBase64(ctx context.Context, rawURL string) (string, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return "", "", fmt.Errorf("image fetch status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 5<<20))
+	if err != nil {
+		return "", "", err
+	}
+	if len(body) < 32 {
+		return "", "", fmt.Errorf("image too small")
+	}
+	mime := resp.Header.Get("content-type")
+	if i := strings.Index(mime, ";"); i >= 0 {
+		mime = mime[:i]
+	}
+	mime = strings.TrimSpace(mime)
+	if mime == "" || !strings.HasPrefix(mime, "image/") {
+		mime = http.DetectContentType(body)
+	}
+	if !strings.HasPrefix(mime, "image/") {
+		return "", "", fmt.Errorf("not an image: %s", mime)
+	}
+	return base64.StdEncoding.EncodeToString(body), mime, nil
 }

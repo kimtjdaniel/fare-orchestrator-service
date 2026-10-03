@@ -71,6 +71,7 @@ func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL 
 		lines = append(lines, "")
 	}
 	lines = append(lines, "Tap the poll below, or reply 1, 2, or 3.")
+	lines = append(lines, "Those prices are rough guesses until I search real fares.")
 	return strings.Join(lines, "\n")
 }
 
@@ -161,6 +162,24 @@ func AdvisorItinerary(planned map[string]any) string {
 		lines = append(lines, "")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func LockedTravel(trip *models.Trip) string {
+	if trip == nil || trip.Itinerary == nil {
+		return ""
+	}
+	opt := models.Option{
+		Destination: trip.Destination, EmbarkingDate: trip.EmbarkingDate,
+		ReturningDate: trip.ReturningDate, DurationNights: trip.DurationNights,
+	}
+	if o := trip.ChosenOption(); o != nil {
+		opt = *o
+	}
+	s := SummaryMessage(opt, trip.Itinerary, trip.Participants, trip.ID, "")
+	if i := strings.LastIndex(s, "Yes to book"); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return s
 }
 
 func OptionPollChoices(options []models.Option) []string {

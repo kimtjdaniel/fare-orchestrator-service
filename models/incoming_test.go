@@ -84,3 +84,21 @@ func TestIncomingMessageParticipants(t *testing.T) {
 		t.Fatalf("participants=%+v", m.Participants)
 	}
 }
+
+func TestIncomingMessageQuoted(t *testing.T) {
+	raw := []byte(`{
+		"group_id": "1203@g.us",
+		"sender_id": "14165551234@c.us",
+		"sender_name": "Priya",
+		"text": "send it!",
+		"tagged": true,
+		"quoted": {"id": "bot_msg", "sender_id": "1555@c.us", "text": "Casa Linda. About C$149 a night, CAD.", "from_me": true}
+	}`)
+	var m IncomingMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Quoted == nil || !m.Quoted.FromMe || m.Quoted.Text == "" {
+		t.Fatalf("quoted=%+v", m.Quoted)
+	}
+}

@@ -99,9 +99,11 @@ func AgentSystem(botName, context string) string {
 
 %s
 
-If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination and dates already on the trip. Mix food, walking, one slower afternoon, one local-feeling dinner. Don't center every line on price.
+If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination, dates, flights, and hotel already in LOCKED TRIP FACTS.
+Never invent a price, airport, airline, or hotel. If a number is not in the facts JSON, do not quote one. Once locked fares exist, ignore older option guesses (like C$3,200).
 Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
+If they asked for a photo or to send the hotel, do not describe random cliffs or cities — the app sends the stay photo itself.
 You cannot cancel bookings or change a booked destination in this reply. Never claim you cancelled or cleared a trip.
 Trip notes: %s`, botName, ChatVoice, context)
 }
@@ -111,8 +113,10 @@ func ItinerarySystem(botName, today string) string {
 Today's date is %s.
 
 Write a day-by-day trip itinerary as JSON for WhatsApp.
-Use the destination, dates, duration, and tastes already on the trip. Do NOT invent a new date range or a different city unless the trip has none.
-Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Specific names when you know them. Not a price list.
+Use the destination, dates, duration, tastes, and LOCKED FACTS already on the trip.
+Day 1 arrival city/airport must match the inbound flight in locked facts. Do not invent a different airport or fare.
+Do NOT invent prices. Do not write a brochure greeting ("thrilled to present"). Mix food, walking, one slower afternoon.
+Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Specific names when you know them.
 intro: one warm sentence. You may @mention a chatter with their roster name if needed. Never WhatsApp IDs. No emoji, no markdown.`, botName, today)
 }
 
