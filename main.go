@@ -47,8 +47,9 @@ func main() {
 	switch {
 	case cfg.MockLLM:
 		llmClient = &llm.MockLLM{}
-	case cfg.GeminiAPIKey != "":
-		llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
+	case cfg.GeminiAPIKey == "":
+		slog.Error("MOCK_LLM=false but GEMINI_API_KEY is empty — add a key from Google AI Studio")
+		os.Exit(1)
 	default:
 		llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
 	}

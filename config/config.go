@@ -102,9 +102,9 @@ func Load() *Settings {
 		MockBrowser:             boolEnv("MOCK_BROWSER", true),
 		MockBookingDelaySeconds: floatEnv("MOCK_BOOKING_DELAY", 3),
 
-		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
+		GeminiAPIKey: firstNonEmpty(getenv("GEMINI_API_KEY", ""), getenv("GOOGLE_API_KEY", "")),
 		GeminiModel:  getenv("GEMINI_MODEL", "gemini-3.8-flash"),
-		LLMCacheDir:  getenv("LLM_CACHE_DIR", ".llm_cache"),
+		LLMCacheDir:  getenv("LLM_CACHE_DIR", ""),
 
 		MongoURI: getenv("MONGODB_URI", ""),
 		MongoDB:  getenv("MONGODB_DB", "fare"),

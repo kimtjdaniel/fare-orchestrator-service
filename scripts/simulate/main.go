@@ -82,6 +82,10 @@ func main() {
 		if cfg.MockLLM {
 			llmClient = &llm.MockLLM{}
 		} else {
+			if cfg.GeminiAPIKey == "" {
+				fmt.Fprintln(os.Stderr, "MOCK_LLM=false but GEMINI_API_KEY is empty")
+				os.Exit(1)
+			}
 			llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
 		}
 		messenger := &messaging.ConsoleMessenger{}
