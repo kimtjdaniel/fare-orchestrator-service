@@ -11,8 +11,8 @@ import (
 	"math/big"
 	"sort"
 
-	"yate-brain/config"
-	"yate-brain/models"
+	"fare-brain/config"
+	"fare-brain/models"
 )
 
 // SearchFlights returns round-trip offers, cheapest first. Prices are per person, CAD.

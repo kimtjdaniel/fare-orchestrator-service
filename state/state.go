@@ -1,14 +1,14 @@
 // Package state implements the trip state machine. The ONLY place that decides which stage can
 // follow which.
 //
-// Rule: code moves the trip between states, never Claude. Claude reads and writes text; this file
+// Rule: code moves the trip between states, never Gemini. Gemini reads and writes text; this file
 // guarantees nothing gets booked without a ✅.
 package state
 
 import (
 	"fmt"
 
-	"yate-brain/models"
+	"fare-brain/models"
 )
 
 type InvalidTransitionError struct {

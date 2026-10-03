@@ -5,7 +5,7 @@
 //	go run ./scripts/simulate --url http://localhost:8000   # send to a running server instead
 //
 // Interactive input format:   Name: message      (mention the bot with @Fare)
-// Uses your .env, so with MOCK_LLM=false it calls real Claude (cached in LLM_CACHE_DIR).
+// Uses your .env, so with MOCK_LLM=false it calls the real LLM (cached in LLM_CACHE_DIR).
 package main
 
 import (
@@ -20,12 +20,12 @@ import (
 	"strings"
 	"time"
 
-	"yate-brain/config"
-	"yate-brain/llm"
-	"yate-brain/messaging"
-	"yate-brain/models"
-	"yate-brain/orchestrator"
-	"yate-brain/store"
+	"fare-brain/config"
+	"fare-brain/llm"
+	"fare-brain/messaging"
+	"fare-brain/models"
+	"fare-brain/orchestrator"
+	"fare-brain/store"
 )
 
 type fixture struct {
@@ -82,7 +82,7 @@ func main() {
 		if cfg.MockLLM {
 			llmClient = &llm.MockLLM{}
 		} else {
-			llmClient = llm.NewClaudeLLM(cfg.AnthropicAPIKey, cfg.AnthropicModel, cfg.LLMCacheDir)
+			llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
 		}
 		messenger := &messaging.ConsoleMessenger{}
 		brain := orchestrator.NewBrain(cfg, st, llmClient, messenger)
@@ -91,7 +91,7 @@ func main() {
 		}
 	}
 
-	llmLabel := cfg.AnthropicModel
+	llmLabel := cfg.GeminiModel
 	if cfg.MockLLM {
 		llmLabel = "mock"
 	}

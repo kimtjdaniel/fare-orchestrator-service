@@ -1,4 +1,4 @@
-module yate-brain
+module fare-brain
 
 go 1.27.1
 

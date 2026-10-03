@@ -16,11 +16,9 @@ type Settings struct {
 	MockBrowser             bool
 	MockBookingDelaySeconds float64
 
-	AnthropicAPIKey string
-	AnthropicModel  string
-	GeminiAPIKey    string
-	GeminiModel     string
-	LLMCacheDir     string
+	GeminiAPIKey string
+	GeminiModel  string
+	LLMCacheDir  string
 
 	MongoURI string
 	MongoDB  string
@@ -104,11 +102,9 @@ func Load() *Settings {
 		MockBrowser:             boolEnv("MOCK_BROWSER", true),
 		MockBookingDelaySeconds: floatEnv("MOCK_BOOKING_DELAY", 3),
 
-		AnthropicAPIKey: getenv("ANTHROPIC_API_KEY", ""),
-		AnthropicModel:  getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"),
-		GeminiAPIKey:    getenv("GEMINI_API_KEY", ""),
-		GeminiModel:     getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-		LLMCacheDir:     getenv("LLM_CACHE_DIR", ".llm_cache"),
+		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
+		GeminiModel:  getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+		LLMCacheDir:  getenv("LLM_CACHE_DIR", ".llm_cache"),
 
 		MongoURI: getenv("MONGODB_URI", ""),
 		MongoDB:  getenv("MONGODB_DB", "fare"),

@@ -159,7 +159,7 @@ type AccommodationPreferences struct {
 	Rating *float64          `json:"rating,omitempty" bson:"rating,omitempty"`
 }
 
-// Participant is one person's preferences: the shape Claude fills via record_preferences. Payment
+// Participant is one person's preferences: the shape Gemini fills via record_preferences. Payment
 // and passport data live in the 1Password vault, never here — only whether they've uploaded it.
 type Participant struct {
 	PID                  string `json:"pid" bson:"pid"`

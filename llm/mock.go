@@ -16,7 +16,7 @@ var (
 	numberRe  = regexp.MustCompile(`\b([1-3])\b`)
 )
 
-// MockLLM is a deterministic stand-in for Claude, good enough to drive the whole flow offline.
+// MockLLM is a deterministic stand-in for Gemini, good enough to drive the whole flow offline.
 type MockLLM struct {
 	Calls []string
 }

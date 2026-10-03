@@ -1,6 +1,6 @@
 // Package orchestrator is the brain. Every incoming group message lands in Brain.Handle().
 //
-// Flow (code moves the state, Claude only reads/writes text). Each WhatsApp group has a SINGLETON
+// Flow (code moves the state, Gemini only reads/writes text). Each WhatsApp group has a SINGLETON
 // trip document (no history of past trips) that gets reset and reused for every new cycle:
 //
 //	COLLECTING --@mention--> extract prefs + propose options --> AWAITING_CHOICE
@@ -21,15 +21,15 @@ import (
 	"sync"
 	"time"
 
-	"yate-brain/config"
-	"yate-brain/formatting"
-	"yate-brain/llm"
-	"yate-brain/messaging"
-	"yate-brain/models"
-	"yate-brain/prompts"
-	"yate-brain/state"
-	"yate-brain/store"
-	"yate-brain/tools"
+	"fare-brain/config"
+	"fare-brain/formatting"
+	"fare-brain/llm"
+	"fare-brain/messaging"
+	"fare-brain/models"
+	"fare-brain/prompts"
+	"fare-brain/state"
+	"fare-brain/store"
+	"fare-brain/tools"
 )
 
 const defaultLeadEmail = "demo@fare.travel"
@@ -74,7 +74,7 @@ func (b *Brain) today() time.Time {
 }
 
 // validateOptions checks each option against every participant's stated availability. Returns
-// {option.destination: [violation, ...]} for options that don't fit someone. Claude is already
+// {option.destination: [violation, ...]} for options that don't fit someone. Gemini is already
 // told these rules (see PROPOSE_SYSTEM); this just catches when it slips.
 func validateOptions(options []models.Option, people []models.Participant) map[string][]string {
 	violations := map[string][]string{}
@@ -116,7 +116,7 @@ func fitsAvailability(o models.Option, availability []string) bool {
 	return true
 }
 
-// matchName matches a chat display name to an extracted participant. Chat names and Claude's
+// matchName matches a chat display name to an extracted participant. Chat names and Gemini's
 // extracted names often disagree on nicknames or a last name ("Jordan Lee" in chat vs "Jordan"
 // extracted, or the reverse), so try exact, then substring, then first-name before giving up.
 func matchName(name string, people []models.Participant) *models.Participant {
@@ -255,7 +255,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string) er
 	transcript := strings.Join(lines, "\n")
 	day := b.today().Format("2006-01-02")
 
-	// Two Claude calls take 5-20s; an instant ack keeps the group chat from going silent.
+	// Two Gemini calls take 5-20s; an instant ack keeps the group chat from going silent.
 	if err := b.say(ctx, trip.GroupID, "Reading the chat 🧠 give me a few seconds…", nil); err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string) er
 	}
 
 	// Can't search flights without an origin: ask now, re-plan on the next @mention. Also
-	// surface whatever else Claude flagged as missing (budget, dates, ...) rather than silently
+	// surface whatever else Gemini flagged as missing (budget, dates, ...) rather than silently
 	// proposing a plan built on guesses.
 	var noOrigin []string
 	for _, p := range people {
@@ -331,7 +331,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string) er
 	return b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, b.Config.DashboardURL), optionButtons(options))
 }
 
-// propose asks Claude for 2-3 options, persists them onto the trip, and returns the updated trip.
+// propose asks Gemini for 2-3 options, persists them onto the trip, and returns the updated trip.
 // If every option breaks someone's dates, it re-asks once with the specifics instead of showing
 // the group a plan nobody can actually take. ok=false means a message was already sent and
 // there's nothing more to do.
@@ -452,7 +452,7 @@ func requiredString(m map[string]any, key string) (string, error) {
 
 // replan re-proposes options for already-known participants ("make it cheaper", "swap to the
 // beach one"). No re-extraction: the group is reacting to the options, not restating
-// preferences, so re-reading the whole chat through Claude again would just add latency.
+// preferences, so re-reading the whole chat through Gemini again would just add latency.
 func (b *Brain) replan(ctx context.Context, trip *models.Trip, feedback string) error {
 	trip, intro, options, ok, err := b.propose(ctx, trip, trip.Participants, b.today().Format("2006-01-02"), feedback, false)
 	if err != nil {
@@ -518,7 +518,7 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 	return nil
 }
 
-// interpret uses regex for the obvious replies; Claude only for @mentions that need understanding.
+// interpret uses regex for the obvious replies; Gemini only for @mentions that need understanding.
 func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (map[string]any, error) {
 	if trip.State == models.AwaitingChoice {
 		if hit := choiceOnlyRe.FindStringSubmatch(m.Text); hit != nil {
@@ -871,7 +871,7 @@ func toSchema(m map[string]any) llm.Schema {
 }
 
 // decodeInto round-trips through JSON to decode a loosely-typed value (map[string]any / []any,
-// from Claude's structured output) into a concrete Go type.
+// from Gemini's structured output) into a concrete Go type.
 func decodeInto[T any](v any, out *T) error {
 	raw, err := json.Marshal(v)
 	if err != nil {

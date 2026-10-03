@@ -2,7 +2,7 @@
 // in .env.
 //
 //	go run ./scripts/smoke db        # connect, ensure indexes, list collections    (free)
-//	go run ./scripts/smoke claude    # one tiny structured-output call              (~$0.001)
+//	go run ./scripts/smoke gemini    # one tiny structured-output call              (~$0.001)
 //	go run ./scripts/smoke schemas   # send all 3 brain schemas once, real transcript (~$0.02)
 //	go run ./scripts/smoke telegram  # getMe + getWebhookInfo                       (free)
 //
@@ -19,10 +19,10 @@ import (
 	"os"
 	"time"
 
-	"yate-brain/config"
-	"yate-brain/llm"
-	"yate-brain/prompts"
-	"yate-brain/store"
+	"fare-brain/config"
+	"fare-brain/llm"
+	"fare-brain/prompts"
+	"fare-brain/store"
 )
 
 func ok(msg string)   { fmt.Printf("✅ %s\n", msg) }
@@ -52,25 +52,25 @@ func smokeDB(cfg *config.Settings) {
 	ok(fmt.Sprintf("connected, indexes ensured, db=%s", cfg.MongoDB))
 }
 
-func claudeClient(cfg *config.Settings) *llm.ClaudeLLM {
-	if cfg.AnthropicAPIKey == "" {
-		fail("ANTHROPIC_API_KEY is empty")
+func geminiClient(cfg *config.Settings) *llm.GeminiLLM {
+	if cfg.GeminiAPIKey == "" {
+		fail("GEMINI_API_KEY is empty")
 	}
-	return llm.NewClaudeLLM(cfg.AnthropicAPIKey, cfg.AnthropicModel, "")
+	return llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, "")
 }
 
-func smokeClaude(cfg *config.Settings) {
-	c := claudeClient(cfg)
+func smokeGemini(cfg *config.Settings) {
+	c := geminiClient(cfg)
 	out, err := c.Structured(context.Background(), "Classify the message.",
 		[]llm.Message{{Role: "user", Content: "✅ book it!"}}, toSchema(prompts.InterpretReply))
 	if err != nil {
 		fail(err.Error())
 	}
-	ok(fmt.Sprintf("%s answered: %v", cfg.AnthropicModel, out))
+	ok(fmt.Sprintf("%s answered: %v", cfg.GeminiModel, out))
 }
 
 func smokeSchemas(cfg *config.Settings) {
-	c := claudeClient(cfg)
+	c := geminiClient(cfg)
 	raw, err := os.ReadFile("testdata/demo_transcript.json")
 	if err != nil {
 		fail(err.Error())
@@ -200,21 +200,21 @@ func getJSON(client *http.Client, url string) (map[string]any, error) {
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Println("usage: smoke <db|claude|schemas|telegram>")
+		fmt.Println("usage: smoke <db|gemini|schemas|telegram>")
 		os.Exit(1)
 	}
 	cfg := config.Load()
 	switch os.Args[1] {
 	case "db":
 		smokeDB(cfg)
-	case "claude":
-		smokeClaude(cfg)
+	case "gemini":
+		smokeGemini(cfg)
 	case "schemas":
 		smokeSchemas(cfg)
 	case "telegram":
 		smokeTelegram(cfg)
 	default:
-		fmt.Println("usage: smoke <db|claude|schemas|telegram>")
+		fmt.Println("usage: smoke <db|gemini|schemas|telegram>")
 		os.Exit(1)
 	}
 }

@@ -3,11 +3,11 @@ package tools
 import (
 	"context"
 
-	"yate-brain/config"
-	"yate-brain/llm"
+	"fare-brain/config"
+	"fare-brain/llm"
 )
 
-// AgentTools/AgentHandlers are read-only (search) and are the only tools Claude may call freely in
+// AgentTools/AgentHandlers are read-only (search) and are the only tools Gemini may call freely in
 // the agent loop. Booking functions must never be added here — only the approval flow in
 // orchestrator/brain.go can book.
 

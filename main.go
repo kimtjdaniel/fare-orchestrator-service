@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"yate-brain/config"
-	"yate-brain/llm"
-	"yate-brain/messaging"
-	"yate-brain/models"
-	"yate-brain/orchestrator"
-	"yate-brain/store"
+	"fare-brain/config"
+	"fare-brain/llm"
+	"fare-brain/messaging"
+	"fare-brain/models"
+	"fare-brain/orchestrator"
+	"fare-brain/store"
 )
 
 func main() {
@@ -50,7 +50,7 @@ func main() {
 	case cfg.GeminiAPIKey != "":
 		llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
 	default:
-		llmClient = llm.NewClaudeLLM(cfg.AnthropicAPIKey, cfg.AnthropicModel, cfg.LLMCacheDir)
+		llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
 	}
 
 	messenger, err := messaging.MakeMessenger(cfg.MessagingBackend, cfg.RobotURL, cfg.RobotToken, cfg.TelegramBotToken)
@@ -65,7 +65,7 @@ func main() {
 	if cfg.MongoURI != "" {
 		storeKind = "mongo"
 	}
-	llmKind := cfg.AnthropicModel
+	llmKind := cfg.GeminiModel
 	switch {
 	case cfg.MockLLM:
 		llmKind = "mock"
@@ -137,7 +137,7 @@ func healthHandler(cfg *config.Settings) http.HandlerFunc {
 	}
 }
 
-// webhookHandler responds instantly; the work (Claude, searches, Skyvern) happens in a
+// webhookHandler responds instantly; the work (Gemini, searches, Skyvern) happens in a
 // background goroutine, and replies are delivered through Messenger.Send. Keeps the
 // robot/Telegram from timing out.
 func webhookHandler(brain *orchestrator.Brain) http.HandlerFunc {

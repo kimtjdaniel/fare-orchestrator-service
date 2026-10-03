@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"yate-brain/config"
-	"yate-brain/models"
+	"fare-brain/config"
+	"fare-brain/models"
 )
 
 // Hotel booking via Skyvern (P4 owns the checkout page + prompt tuning; signatures are the
