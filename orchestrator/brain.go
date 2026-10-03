@@ -287,6 +287,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	if err != nil {
 		return err
 	}
+	st := ""
+	if trip != nil {
+		st = string(trip.State)
+	}
+	slog.Info("incoming", "from", m.SenderName, "tagged", m.Tagged, "state", st, "text", clipLog(m.Text, 100))
 	sentAt := models.Now()
 	if m.Timestamp != 0 {
 		sentAt = time.Unix(m.Timestamp, 0).UTC()
@@ -421,19 +426,15 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	if err != nil {
 		return err
 	}
-	lines := make([]string, len(history))
-	for i, msg := range history {
-		who := msg.SenderName
-		if msg.IsBot {
-			who = b.Config.BotName
-		}
-		lines[i] = fmt.Sprintf("%s: %s", who, msg.Text)
-	}
-	transcript := strings.Join(lines, "\n")
 	day := b.today().Format("2006-01-02")
 	harvested := harvestFacts(history, b.today())
+	latest := strings.TrimSpace(incoming.Text)
+	if feedback != "" {
+		latest = strings.TrimSpace(feedback)
+	}
 
-	userContent := fmt.Sprintf("Group: %s\nThis WhatsApp group has ONE trip. Reuse it. Never start over.\nTrip state: %s\n", trip.GroupName, trip.State)
+	userContent := fmt.Sprintf("Latest WhatsApp message from %s:\n%s\n\nSatisfy that message. Older chat is background.\n\n", incoming.SenderName, latest)
+	userContent += fmt.Sprintf("Group: %s\nTrip state: %s\n", trip.GroupName, trip.State)
 	if trip.Origin != "" || harvested.Airport != "" || harvested.City != "" {
 		userContent += fmt.Sprintf("Known origin: %s %s %s\n", trip.Origin, harvested.Airport, harvested.City)
 	}
@@ -451,11 +452,12 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		b, _ := json.MarshalIndent(trip.Options, "", "  ")
 		userContent += "Options already shown to the group (do not pretend you haven't proposed these unless they asked to change them):\n" + string(b) + "\n\n"
 	}
-	userContent += "Group chat:\n" + transcript
+	userContent += "Recent chat:\n" + compactChat(history, 20)
 	if feedback != "" {
-		userContent += "\n\nLatest update from the group (may be one person speaking for another):\n" + feedback
+		userContent += "\n\nLatest update from the group:\n" + feedback
 	}
 
+	slog.Info("calling gemini", "stage", "plan", "from", incoming.SenderName, "text", clipLog(incoming.Text, 80))
 	planned, err := b.LLM.Structured(ctx, prompts.PlanSystem(b.Config.BotName, day),
 		[]llm.Message{{Role: "user", Content: userContent}},
 		toSchema(prompts.PlanTrip))
@@ -595,6 +597,7 @@ func (b *Brain) propose(ctx context.Context, trip *models.Trip, people []models.
 	}
 	content := "Participants:\n" + strings.Join(lines, "\n")
 
+	slog.Info("calling gemini", "stage", "propose", "trip", trip.ID)
 	proposal, err := b.LLM.Structured(ctx, prompts.ProposeSystem(b.Config.BotName, day, fb),
 		[]llm.Message{{Role: "user", Content: content}}, toSchema(prompts.ProposeOptions))
 	if err != nil {
@@ -787,36 +790,32 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	if looksLikeItineraryAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
-	if looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
+	if looksLikeCancelBooking(m.Text) {
+		return map[string]any{"intent": "cancel"}, nil
+	}
+	if looksLikeReplan(m.Text) || looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
 		return map[string]any{"intent": "revise", "revision_request": m.Text}, nil
 	}
-	optsDesc := "none"
-	if len(trip.Options) > 0 {
-		parts := make([]string, len(trip.Options))
-		for i, o := range trip.Options {
-			parts[i] = fmt.Sprintf("%d. %s", o.Position, o.Destination)
-		}
-		optsDesc = strings.Join(parts, "; ")
-	}
-	return b.LLM.Structured(ctx, prompts.InterpretSystem(string(trip.State), optsDesc),
-		[]llm.Message{{Role: "user", Content: m.Text}}, toSchema(prompts.InterpretReply))
+	return map[string]any{"intent": "question"}, nil
 }
 
 func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	ctxBlob, err := json.Marshal(map[string]any{
-		"state":        trip.State,
-		"origin":       trip.Origin,
-		"destination":  trip.Destination,
-		"participants": trip.Participants,
-		"options":      trip.Options,
-		"itinerary":    trip.Itinerary,
+		"state":       trip.State,
+		"origin":      trip.Origin,
+		"destination": trip.Destination,
+		"dates":       []string{trip.EmbarkingDate, trip.ReturningDate},
+		"options":     trip.Options,
 	})
 	if err != nil {
 		return err
 	}
+	user := fmt.Sprintf("Latest WhatsApp message from %s:\n%s\n\nTrip notes (JSON):\n%s\n\nReply to the latest message only.",
+		m.SenderName, m.Text, string(ctxBlob))
+	slog.Info("calling gemini", "stage", "reply", "from", m.SenderName, "text", clipLog(m.Text, 80))
 	answer, err := b.LLM.Agent(ctx, prompts.AgentSystem(b.Config.BotName, string(ctxBlob)),
-		[]llm.Message{{Role: "user", Content: m.Text}},
-		tools.AgentTools, tools.AgentHandlers(b.Config))
+		[]llm.Message{{Role: "user", Content: user}},
+		nil, nil)
 	if err != nil {
 		return err
 	}
@@ -876,6 +875,7 @@ func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m 
 	}
 	user := fmt.Sprintf("City: %s\nDays: %d\nDates: %s\nOrigin: %s\nTastes: %s\nRequest: %s\n",
 		dest, days, dates, trip.Origin, formatKnownPrefs(trip.Participants), m.Text)
+	slog.Info("calling gemini", "stage", "itinerary", "from", m.SenderName, "text", clipLog(m.Text, 80))
 	out, err := b.LLM.Structured(ctx, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")),
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
 	if err != nil {
@@ -1184,6 +1184,39 @@ func (b *Brain) say(ctx context.Context, groupID, text string, buttons []messagi
 }
 
 // ------------------------------------------------------------------ helpers
+
+func compactChat(history []models.Message, n int) string {
+	if n <= 0 || len(history) == 0 {
+		return ""
+	}
+	if len(history) > n {
+		history = history[len(history)-n:]
+	}
+	lines := make([]string, 0, len(history))
+	for _, msg := range history {
+		who := msg.SenderName
+		if msg.IsBot {
+			who = "Fare"
+		}
+		text := strings.TrimSpace(msg.Text)
+		if len(text) > 180 {
+			text = text[:180] + "…"
+		}
+		if text == "" {
+			continue
+		}
+		lines = append(lines, who+": "+text)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func clipLog(s string, n int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	if n > 0 && len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
 
 func optionButtons(options []models.Option) []messaging.Button {
 	buttons := make([]messaging.Button, len(options))

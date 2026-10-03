@@ -36,7 +36,7 @@ func NewGeminiLLM(apiKey, model, cacheDir string) *GeminiLLM {
 	if model == "" {
 		model = "gemini-3.1-flash-lite"
 	}
-	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 90 * time.Second}}
+	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 40 * time.Second}}
 }
 
 func (g *GeminiLLM) modelsToTry() []string {
@@ -106,7 +106,8 @@ type geminiError struct {
 }
 
 // generate posts a generateContent request, caching on the exact request body.
-func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiResponse, error) {
+func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]any) (*geminiResponse, error) {
+	applyFastGen(body)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -118,7 +119,7 @@ func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiR
 		key := hex.EncodeToString(sum[:])[:32]
 		cachePath = filepath.Join(g.CacheDir, key+".json")
 		if cached, err := os.ReadFile(cachePath); err == nil {
-			slog.Info("llm cache hit", "key", key)
+			slog.Info("llm cache hit", "kind", kind, "key", key)
 			var resp geminiResponse
 			if err := json.Unmarshal(cached, &resp); err != nil {
 				return nil, err
@@ -128,6 +129,9 @@ func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiR
 	}
 
 	t0 := time.Now()
+	preview := lastContentPreview(body)
+	slog.Info("prompting gemini", "kind", kind, "model", g.Model, "bytes", len(payload), "preview", preview)
+
 	var lastErr error
 	for _, model := range g.modelsToTry() {
 		for attempt := 1; attempt <= 2; attempt++ {
@@ -152,11 +156,11 @@ func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiR
 				var apiErr geminiError
 				_ = json.Unmarshal(raw, &apiErr)
 				lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
-				slog.Warn("gemini busy, retrying", "model", model, "attempt", attempt, "status", httpResp.StatusCode)
+				slog.Warn("gemini busy, retrying", "kind", kind, "model", model, "attempt", attempt, "status", httpResp.StatusCode)
 				select {
 				case <-ctx.Done():
 					return nil, ctx.Err()
-				case <-time.After(time.Duration(attempt) * 1500 * time.Millisecond):
+				case <-time.After(400 * time.Millisecond):
 				}
 				continue
 			}
@@ -172,7 +176,7 @@ func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiR
 			if err := json.Unmarshal(raw, &resp); err != nil {
 				return nil, err
 			}
-			slog.Info("llm call", "model", model, "elapsed", time.Since(t0),
+			slog.Info("llm call", "kind", kind, "model", model, "elapsed", time.Since(t0),
 				"in", resp.UsageMetadata.PromptTokenCount, "out", resp.UsageMetadata.CandidatesTokenCount)
 			if cachePath != "" {
 				_ = os.WriteFile(cachePath, raw, 0o644)
@@ -187,12 +191,13 @@ func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiR
 }
 
 func (g *GeminiLLM) Structured(ctx context.Context, system string, messages []Message, schema Schema) (map[string]any, error) {
-	resp, err := g.generate(ctx, map[string]any{
+	resp, err := g.generate(ctx, "structured:"+schema.Name, map[string]any{
 		"system_instruction": geminiContent{Parts: []geminiPart{{Text: system}}},
 		"contents":           toGeminiContents(messages),
 		"generationConfig": map[string]any{
 			"responseMimeType": "application/json",
 			"responseSchema":   toGeminiSchema(schema.Schema),
+			"maxOutputTokens":  2048,
 		},
 	})
 	if err != nil {
@@ -227,11 +232,12 @@ func (g *GeminiLLM) Agent(ctx context.Context, system string, messages []Message
 		body := map[string]any{
 			"system_instruction": geminiContent{Parts: []geminiPart{{Text: system}}},
 			"contents":           contents,
+			"generationConfig":   map[string]any{"maxOutputTokens": 800},
 		}
 		if len(geminiTools) > 0 {
 			body["tools"] = geminiTools
 		}
-		resp, err := g.generate(ctx, body)
+		resp, err := g.generate(ctx, "agent", body)
 		if err != nil {
 			return "", err
 		}
@@ -357,4 +363,34 @@ func toGeminiSchema(schema map[string]any) map[string]any {
 		}
 	}
 	return out
+}
+
+func applyFastGen(body map[string]any) {
+	cfg, _ := body["generationConfig"].(map[string]any)
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	if _, ok := cfg["maxOutputTokens"]; !ok {
+		cfg["maxOutputTokens"] = 1536
+	}
+	cfg["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
+	body["generationConfig"] = cfg
+}
+
+func lastContentPreview(body map[string]any) string {
+	contents, _ := body["contents"].([]geminiContent)
+	for i := len(contents) - 1; i >= 0; i-- {
+		for j := len(contents[i].Parts) - 1; j >= 0; j-- {
+			t := strings.TrimSpace(contents[i].Parts[j].Text)
+			if t == "" {
+				continue
+			}
+			t = strings.ReplaceAll(t, "\n", " ")
+			if len(t) > 140 {
+				return t[:140] + "…"
+			}
+			return t
+		}
+	}
+	return ""
 }
