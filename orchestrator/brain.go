@@ -257,6 +257,17 @@ func looksLikePrefUpdate(text string, people []models.Participant, roster []mode
 	return false
 }
 
+// designatedPayer returns the WhatsAppName of the participant marked as payer, or "" if
+// nobody's been asked yet (the group never answered the "who's paying?" poll).
+func designatedPayer(people []models.Participant) string {
+	for _, p := range people {
+		if p.Payer {
+			return p.WhatsAppName
+		}
+	}
+	return ""
+}
+
 // matchName matches a chat display name to an extracted participant. Chat names and Gemini's
 // extracted names often disagree on nicknames or a last name ("Jordan Lee" in chat vs "Jordan"
 // extracted, or the reverse), so try exact, then substring, then first-name before giving up.
@@ -1382,7 +1393,9 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 	}
 
 	payer := approver
-	if match := matchName(approver, people); match != nil {
+	if designated := designatedPayer(people); designated != "" {
+		payer = designated
+	} else if match := matchName(approver, people); match != nil {
 		payer = match.WhatsAppName
 	} else if len(people) > 0 {
 		payer = people[0].WhatsAppName
