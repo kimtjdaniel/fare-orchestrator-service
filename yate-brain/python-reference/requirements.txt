@@ -1,0 +1,14 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-dotenv>=1.0
+httpx>=0.27
+anthropic>=0.40
+asyncpg>=0.29
+
+# Only needed when MOCK_BROWSER=false (imported lazily). Skyvern supports Python 3.11-3.13 only;
+# the marker skips it on 3.14 instead of failing the whole install.
+skyvern; python_version < "3.14"
+
+# dev
+pytest>=8

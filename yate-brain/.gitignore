@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.llm_cache/
+CLAUDE.local.md
+/yate-brain
