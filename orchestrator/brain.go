@@ -47,11 +47,9 @@ var (
 	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
 	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
 	iPayRe         = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
-)
 	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked)\b`)
 	flightAskRe    = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
-	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
-	iPayRe         = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
+	cheaperAskRe   = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
 )
 
 type Brain struct {
@@ -1518,17 +1516,16 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 	}
 
 	payer := strings.TrimSpace(trip.PayerName)
-	if payer == "" {
-		payer = approver
-	}
 	if match := matchName(payer, people); match != nil {
-	payer := approver
-	if designated := designatedPayer(people); designated != "" {
+		payer = match.WhatsAppName
+	} else if designated := designatedPayer(people); designated != "" {
 		payer = designated
 	} else if match := matchName(approver, people); match != nil {
 		payer = match.WhatsAppName
-	} else if len(people) > 0 && payer == "" {
+	} else if len(people) > 0 {
 		payer = people[0].WhatsAppName
+	} else if payer == "" {
+		payer = approver
 	}
 	names := make([]string, len(people))
 	for i, p := range people {

@@ -93,7 +93,6 @@ func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen model
 		return err
 	}
 	return b.maybeAskPayer(ctx, trip, false)
-	return b.askWhoPays(ctx, trip, people)
 }
 
 func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []models.Participant) error {
@@ -105,6 +104,74 @@ func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []mode
 		names[i] = p.WhatsAppName
 	}
 	return b.sendPoll(ctx, trip.GroupID, "Who's paying?", names, "payer", trip.ID)
+}
+
+func (b *Brain) maybeAskPayer(ctx context.Context, trip *models.Trip, force bool) error {
+	if hasDesignatedPayer(trip.Participants) {
+		return nil
+	}
+	if trip.AskedPayer && !force {
+		return nil
+	}
+	if err := b.askWhoPays(ctx, trip, trip.Participants); err != nil {
+		return err
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_payer": true})
+	if err != nil {
+		return err
+	}
+	if updated != nil {
+		*trip = *updated
+	}
+	return nil
+}
+
+func (b *Brain) capturePayer(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (*models.Trip, error) {
+	if !looksLikeIPay(m.Text) || hasDesignatedPayer(trip.Participants) {
+		return trip, nil
+	}
+	match := matchName(m.SenderName, trip.Participants)
+	if match == nil {
+		return trip, nil
+	}
+	people := trip.Participants
+	for i := range people {
+		people[i].Payer = people[i].WhatsAppName == match.WhatsAppName
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
+		"participants": people,
+		"payer_name":   match.WhatsAppName,
+		"asked_payer":  true,
+	})
+	if err != nil {
+		return trip, err
+	}
+	if updated == nil {
+		return trip, nil
+	}
+	return updated, nil
+}
+
+func (b *Brain) applyPayerVote(ctx context.Context, trip *models.Trip, vote models.PollVote, selected string) error {
+	if selected == "" {
+		return nil
+	}
+	match := matchName(selected, trip.Participants)
+	if match == nil {
+		return b.say(ctx, trip.GroupID, "Didn't catch who that was — tap the poll option again.", nil)
+	}
+	people := trip.Participants
+	for i := range people {
+		people[i].Payer = people[i].WhatsAppName == match.WhatsAppName
+	}
+	if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
+		"participants": people,
+		"payer_name":   match.WhatsAppName,
+		"asked_payer":  true,
+	}); err != nil {
+		return err
+	}
+	return b.say(ctx, trip.GroupID, match.WhatsAppName+" is on the hook for this one. 💳", nil)
 }
 
 func hasDesignatedPayer(people []models.Participant) bool {
