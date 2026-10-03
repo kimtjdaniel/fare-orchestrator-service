@@ -43,7 +43,10 @@ func TestLooksLikePrefUpdate(t *testing.T) {
 
 func TestScrubWhatsAppIDs(t *testing.T) {
 	got := scrubWhatsAppIDs("Hey @Priya and @14165551234@c.us, dates?")
-	if strings.Contains(got, "@") || strings.Contains(got, "c.us") || strings.Contains(strings.ToLower(got), "priya") {
-		t.Fatalf("still had a tag: %q", got)
+	if strings.Contains(got, "c.us") || strings.Contains(got, "14165551234") {
+		t.Fatalf("still had a WhatsApp id: %q", got)
+	}
+	if !strings.Contains(got, "@Priya") {
+		t.Fatalf("dropped the display-name mention: %q", got)
 	}
 }

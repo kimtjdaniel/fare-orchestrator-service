@@ -130,14 +130,12 @@ func looksLikeWhatsAppID(s string) bool {
 var (
 	waJIDRe    = regexp.MustCompile(`@?[A-Za-z0-9._+-]+@(?:c\.us|g\.us|lid|s\.whatsapp\.net)`)
 	waAtNumRe  = regexp.MustCompile(`@\d{6,}`)
-	waAtNameRe = regexp.MustCompile(`@[A-Za-z][\w'-]*`)
 	waSpacesRe = regexp.MustCompile(`[^\S\n]{2,}`)
 )
 
 func scrubWhatsAppIDs(text string) string {
 	text = waJIDRe.ReplaceAllString(text, "")
 	text = waAtNumRe.ReplaceAllString(text, "")
-	text = waAtNameRe.ReplaceAllString(text, "")
 	return strings.TrimSpace(waSpacesRe.ReplaceAllString(text, " "))
 }
 
@@ -148,7 +146,7 @@ func formatGroupRoster(members []models.GroupMember) string {
 		if name == "" || p.IsAgent || looksLikeWhatsAppID(name) {
 			continue
 		}
-		lines = append(lines, "- "+name)
+		lines = append(lines, "- "+name+"  (mention as @"+name+")")
 	}
 	return strings.Join(lines, "\n")
 }
