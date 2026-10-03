@@ -1,0 +1,44 @@
+package orchestrator
+
+import (
+	"testing"
+	"time"
+
+	"fare-brain/models"
+)
+
+func TestLooksLikeDashboardAsk(t *testing.T) {
+	if !looksLikeDashboardAsk("send the link again") {
+		t.Fatal("expected dashboard ask")
+	}
+	if looksLikeDashboardAsk("what should we do in lisbon") {
+		t.Fatal("did not expect dashboard ask")
+	}
+}
+
+func TestLooksLikeStuck(t *testing.T) {
+	if !looksLikeStuck("we can't decide on the budget") {
+		t.Fatal("expected stuck")
+	}
+	if looksLikeStuck("lisbon sounds good") {
+		t.Fatal("did not expect stuck")
+	}
+}
+
+func TestMatchOptionFromLabel(t *testing.T) {
+	opts := []models.Option{
+		{Position: 1, Destination: "Lisbon"},
+		{Position: 2, Destination: "Mexico City"},
+	}
+	got := matchOptionFromLabel("Lisbon · Jan 4–9", opts)
+	if got == nil || got.Position != 1 {
+		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestHarvestParenAirport(t *testing.T) {
+	h := harvestText("Vancouver (YVR)", time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC))
+	if h.Airport != "YVR" {
+		t.Fatalf("airport %q", h.Airport)
+	}
+}

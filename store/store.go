@@ -85,6 +85,8 @@ var allowedTripFields = map[string]bool{
 	"activity_description": true, "culinary_description": true, "duration_nights": true,
 	"cost_per_person": true, "embarking_date": true, "returning_date": true,
 	"asked_origin": true, "asked_dates": true,
+	"shared_dashboard": true, "last_poll": true,
+	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 }
 
 // applyTripFields mutates trip in place from a whitelisted fields map, shared by MemoryStore and
@@ -161,6 +163,26 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			trip.AskedOrigin, _ = v.(bool)
 		case "asked_dates":
 			trip.AskedDates, _ = v.(bool)
+		case "shared_dashboard":
+			trip.SharedDashboard, _ = v.(bool)
+		case "last_poll":
+			trip.LastPoll, _ = v.(string)
+		case "roster":
+			trip.Roster, _ = v.([]models.GroupMember)
+		case "budget_note":
+			trip.BudgetNote, _ = v.(string)
+		case "flights_locked":
+			trip.FlightsLocked, _ = v.(bool)
+		case "pending_change":
+			switch pc := v.(type) {
+			case nil:
+				trip.PendingChange = nil
+			case *models.PendingChange:
+				trip.PendingChange = pc
+			case models.PendingChange:
+				cp := pc
+				trip.PendingChange = &cp
+			}
 		}
 	}
 	trip.UpdatedAt = models.Now()

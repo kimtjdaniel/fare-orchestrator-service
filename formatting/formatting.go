@@ -14,7 +14,7 @@ func Money(x *float64) string {
 	if x == nil {
 		return "?"
 	}
-	return fmt.Sprintf("$%s", commas(*x))
+	return fmt.Sprintf("C$%s", commas(*x))
 }
 
 func commas(x float64) string {
@@ -70,9 +70,9 @@ func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL 
 		}
 		lines = append(lines, "")
 	}
-	lines = append(lines, "Which one — 1, 2, or 3?")
+	lines = append(lines, "Tap the poll below, or reply 1, 2, or 3.")
 	if dashboardURL != "" {
-		lines = append(lines, "Details: "+DashboardLink(dashboardURL, tripID))
+		lines = append(lines, DashboardLink(dashboardURL, tripID))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -120,9 +120,9 @@ func SummaryMessage(option models.Option, itinerary map[string]any, people []mod
 		lines = append(lines, fmt.Sprintf("Group total %s.", Money(gt)))
 	}
 	lines = append(lines, "")
-	lines = append(lines, "Yes to book it, or no to look at the other options.")
+	lines = append(lines, "Yes to book it, or no to look at the other options. There's a poll for that too.")
 	if dashboardURL != "" {
-		lines = append(lines, "Details: "+DashboardLink(dashboardURL, tripID))
+		lines = append(lines, DashboardLink(dashboardURL, tripID))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -167,6 +167,21 @@ func AdvisorItinerary(planned map[string]any) string {
 		lines = append(lines, "")
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func OptionPollChoices(options []models.Option) []string {
+	out := make([]string, 0, len(options))
+	for _, o := range options {
+		label := fmt.Sprintf("%s · %s", o.Destination, Dates(o.EmbarkingDate, o.ReturningDate))
+		if len(label) > 90 {
+			label = o.Destination
+		}
+		if strings.TrimSpace(label) == "" {
+			continue
+		}
+		out = append(out, label)
+	}
+	return out
 }
 
 func toFloatPtr(v any) *float64 {

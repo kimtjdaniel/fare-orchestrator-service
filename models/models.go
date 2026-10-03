@@ -269,10 +269,46 @@ type Trip struct {
 	ApprovedBy   string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
 	ApprovedAt   *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
 	HistoryStart *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
-	AskedOrigin  bool           `json:"asked_origin" bson:"asked_origin"`
-	AskedDates   bool           `json:"asked_dates" bson:"asked_dates"`
-	CreatedAt    time.Time      `json:"created_at" bson:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at" bson:"updated_at"`
+	AskedOrigin      bool   `json:"asked_origin" bson:"asked_origin"`
+	AskedDates       bool   `json:"asked_dates" bson:"asked_dates"`
+	SharedDashboard  bool   `json:"shared_dashboard" bson:"shared_dashboard"`
+	LastPoll         string `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
+	Roster           []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`
+	BudgetNote       string         `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
+	FlightsLocked    bool           `json:"flights_locked" bson:"flights_locked"`
+	PendingChange    *PendingChange `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
+	CreatedAt        time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at" bson:"updated_at"`
+}
+
+// PendingChange is a proposed update to already-set trip details. It only applies
+// after every human in the group votes yes on the poll.
+type PendingChange struct {
+	Kind        string            `json:"kind" bson:"kind"`
+	Summary     string            `json:"summary" bson:"summary"`
+	ProposedBy  string            `json:"proposed_by" bson:"proposed_by"`
+	Dates       []string          `json:"dates,omitempty" bson:"dates,omitempty"`
+	Airport     string            `json:"airport,omitempty" bson:"airport,omitempty"`
+	City        string            `json:"city,omitempty" bson:"city,omitempty"`
+	Destination string            `json:"destination,omitempty" bson:"destination,omitempty"`
+	Budget      string            `json:"budget,omitempty" bson:"budget,omitempty"`
+	Direct      *bool             `json:"direct,omitempty" bson:"direct,omitempty"`
+	Needed      []string          `json:"needed" bson:"needed"`
+	Votes       map[string]string `json:"votes" bson:"votes"`
+}
+
+// PollVote is posted by the WhatsApp robot when someone taps a poll option.
+type PollVote struct {
+	Event            string   `json:"event"`
+	GroupID          string   `json:"group_id"`
+	GroupName        string   `json:"group_name"`
+	VoterID          string   `json:"voter_id"`
+	VoterName        string   `json:"voter_name"`
+	PollMessageID    string   `json:"poll_message_id"`
+	PollName         string   `json:"poll_name"`
+	SelectedOptions  []string `json:"selected_options"`
+	Timestamp        int64    `json:"timestamp"`
+	AgentID          string   `json:"agent_id,omitempty"`
 }
 
 // ChosenOption reconstructs an Option-shaped view of the group's pick from the trip's own flat

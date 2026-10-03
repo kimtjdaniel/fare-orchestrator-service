@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -186,8 +187,27 @@ func getWhatsAppSessionHandler(st store.Store) http.HandlerFunc {
 // robot/Telegram from timing out.
 func webhookHandler(brain *orchestrator.Brain) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		var peek struct {
+			Event string `json:"event"`
+		}
+		_ = json.Unmarshal(raw, &peek)
+		if peek.Event == "poll_vote" {
+			var vote models.PollVote
+			if err := json.Unmarshal(raw, &vote); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			go brain.HandlePollVote(context.Background(), vote)
+			writeJSON(w, http.StatusOK, map[string]any{"reply": nil, "accepted": true})
+			return
+		}
 		var m models.IncomingMessage
-		if err := json.NewDecoder(r.Body).Decode(&m); err != nil {
+		if err := json.Unmarshal(raw, &m); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}

@@ -307,11 +307,16 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"agent_id": m.AgentID,
 	})
 
+	if trip != nil {
+		b.rememberRoster(ctx, trip, m)
+	}
+
 	if trip == nil {
 		trip, err = b.Store.CreateTrip(ctx, m.GroupID, m.GroupName)
 		if err != nil {
 			return err
 		}
+		b.rememberRoster(ctx, trip, m)
 		if m.Tagged && looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
@@ -341,6 +346,16 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	slog.Info("trip loaded", "group", m.GroupID, "state", trip.State,
 		"people", len(trip.Participants), "options", len(trip.Options),
 		"origin", trip.Origin, "dates", hasAnyDates(trip.Participants))
+
+	if looksLikeDashboardAsk(m.Text) && m.Tagged {
+		return b.shareDashboard(ctx, trip)
+	}
+	if looksLikeStuck(m.Text) && (m.Tagged || trip.State == models.AwaitingChoice || trip.State == models.AwaitingApproval) {
+		return b.helpDecide(ctx, trip, m)
+	}
+	if gated, err := b.maybeGateDetails(ctx, trip, m); gated || err != nil {
+		return err
+	}
 
 	switch trip.State {
 	case models.Collecting:
@@ -445,6 +460,12 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	} else if people[0].OriginAirport != "" {
 		fields["origin"] = people[0].OriginAirport
 	}
+	if harvested.Destination != "" && trip.Destination == "" {
+		fields["destination"] = harvested.Destination
+	}
+	if harvested.Budget != "" && trip.BudgetNote == "" {
+		fields["budget_note"] = harvested.Budget
+	}
 	trip, err = b.Store.UpdateTrip(ctx, trip.ID, fields)
 	if err != nil {
 		return err
@@ -457,7 +478,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 			if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_origin": true}); err != nil {
 				return err
 			}
-			return b.say(ctx, trip.GroupID, "Where's everyone flying from?", nil)
+			return b.askOrigin(ctx, trip)
 		}
 	} else if trip.AskedOrigin {
 		_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_origin": false})
@@ -469,7 +490,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 			if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_dates": true}); err != nil {
 				return err
 			}
-			return b.say(ctx, trip.GroupID, "What dates actually work for the group?", nil)
+			return b.askDates(ctx, trip)
 		}
 	} else if trip.AskedDates {
 		_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_dates": false})
@@ -520,7 +541,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 			return err
 		}
 	}
-	return b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, b.Config.DashboardURL), optionButtons(options))
+	return b.postOptions(ctx, trip, intro, options)
 }
 
 // propose asks Gemini for 2-3 options, persists them onto the trip, and returns the updated trip.
@@ -567,7 +588,7 @@ func (b *Brain) propose(ctx context.Context, trip *models.Trip, people []models.
 		options = append(options, opt)
 	}
 	if len(options) == 0 {
-		return trip, "", nil, false, b.say(ctx, trip.GroupID, "I'm not seeing overlap that works for everyone. Could the dates move a little?", nil)
+		return trip, "", nil, false, b.askDates(ctx, trip)
 	}
 
 	violations := validateOptions(options, people)
@@ -645,7 +666,7 @@ func (b *Brain) replan(ctx context.Context, trip *models.Trip, feedback string) 
 	if !ok {
 		return nil
 	}
-	return b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, b.Config.DashboardURL), optionButtons(options))
+	return b.postOptions(ctx, trip, intro, options)
 }
 
 // ------------------------------------------------------------------ replies
@@ -675,8 +696,7 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		if err != nil {
 			return err
 		}
-		return b.say(ctx, trip.GroupID, formatting.OptionsMessage("No worries — here they are again.",
-			trip.Options, trip.ID, b.Config.DashboardURL), optionButtons(trip.Options))
+		return b.postOptions(ctx, trip, "No worries — here they are again.", trip.Options)
 	case kind == "revise":
 		if trip.State == models.AwaitingApproval {
 			trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
@@ -705,7 +725,7 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "approve" && trip.State == models.AwaitingChoice:
-		return b.say(ctx, trip.GroupID, "Need a 1, 2, or 3 first.", nil)
+		return b.say(ctx, trip.GroupID, "Need a 1, 2, or 3 on the poll first.", nil)
 	}
 	return nil
 }
@@ -949,8 +969,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		return err
 	}
 	chosen := trip.ChosenOption()
-	return b.say(ctx, trip.GroupID, formatting.SummaryMessage(*chosen, itinMap, people, trip.ID, b.Config.DashboardURL),
-		[]messaging.Button{{Label: "Book it", Payload: "✅"}, {Label: "Back", Payload: "❌"}})
+	return b.postSummary(ctx, trip, *chosen, itinMap, people)
 }
 
 // ------------------------------------------------------------------ stage: book
@@ -1028,8 +1047,8 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 		if err != nil {
 			return err
 		}
-		if liveURL != "" {
-			if err := b.say(ctx, trip.GroupID, fmt.Sprintf("Hotel booking: %s", liveURL), nil); err != nil {
+		if liveURL != "" && !isLocalOrFakeURL(liveURL) {
+			if err := b.say(ctx, trip.GroupID, "Hotel's going through now.", nil); err != nil {
 				return err
 			}
 		}

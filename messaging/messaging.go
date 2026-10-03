@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -24,6 +25,13 @@ type Button struct {
 
 type Messenger interface {
 	Send(ctx context.Context, groupID, text string, buttons []Button) error
+	SendPoll(ctx context.Context, groupID string, poll Poll) error
+}
+
+type Poll struct {
+	Name                 string
+	Options              []string
+	AllowMultipleAnswers bool
 }
 
 // ---------- console ----------
@@ -50,6 +58,10 @@ func (m *ConsoleMessenger) Send(ctx context.Context, groupID, text string, butto
 	}
 	fmt.Printf("\n🤖 → %s:\n%s%s\n", groupID, text, suffix)
 	return nil
+}
+
+func (m *ConsoleMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
+	return m.Send(ctx, groupID, poll.Name+"\n"+strings.Join(poll.Options, " | "), nil)
 }
 
 func joinStrings(ss []string, sep string) string {
@@ -106,6 +118,38 @@ func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons
 	return nil
 }
 
+func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
+	body, err := json.Marshal(map[string]any{
+		"group_id": groupID,
+		"chat_id":  groupID,
+		"poll": map[string]any{
+			"name":                   poll.Name,
+			"options":                poll.Options,
+			"allow_multiple_answers": poll.AllowMultipleAnswers,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.RobotURL+"/send", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	if m.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+m.Token)
+	}
+	resp, err := m.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("robot /send poll: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // ---------- telegram ----------
 
 type TelegramMessenger struct {
@@ -146,6 +190,18 @@ func (m *TelegramMessenger) Send(ctx context.Context, groupID, text string, butt
 		return fmt.Errorf("telegram sendMessage: status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func (m *TelegramMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
+	buttons := make([]Button, 0, len(poll.Options))
+	for _, opt := range poll.Options {
+		payload := opt
+		if len(payload) > 64 {
+			payload = payload[:64]
+		}
+		buttons = append(buttons, Button{Label: opt, Payload: payload})
+	}
+	return m.Send(ctx, groupID, poll.Name, buttons)
 }
 
 // ---------- factory ----------

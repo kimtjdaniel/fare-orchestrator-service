@@ -30,3 +30,11 @@ func TestApplyHarvestFillsEmptyPeople(t *testing.T) {
 		t.Fatalf("not enough: %+v", got)
 	}
 }
+
+func TestHarvestDecSpan(t *testing.T) {
+	today := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	h := harvestText("update date to dec 20th to dec 21st instead", today)
+	if !datesEqual(h.Dates, []string{"2026-12-20", "2026-12-21"}) {
+		t.Fatalf("dates=%v", h.Dates)
+	}
+}
