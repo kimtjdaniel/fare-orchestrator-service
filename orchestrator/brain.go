@@ -43,6 +43,7 @@ var (
 	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
 	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
 	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|what (should|can|do) we do|where to eat|restaurant|neighbourhood|neighborhood|hidden gem|full \d+\s*-?\s*days?|advise|recommend)`)
+	hotelAskRe     = regexp.MustCompile(`(?i)\b(hotels?|the stay|where (?:are|we'?re|will) we stay|accommodat|the room|show (?:me |us )?(?:the )?(?:hotel|stay)|(?:pic|photo|picture)s? of (?:the )?(?:hotel|stay|room))\b`)
 )
 
 type Brain struct {
@@ -176,6 +177,10 @@ func snapNamesToRoster(people []models.Participant, roster []models.GroupMember)
 
 func looksLikeItineraryAsk(text string) bool {
 	return itineraryAskRe.MatchString(text)
+}
+
+func looksLikeHotelAsk(text string) bool {
+	return hotelAskRe.MatchString(text)
 }
 
 func looksLikePrefUpdate(text string, people []models.Participant, roster []models.GroupMember) bool {
@@ -327,6 +332,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	}
 
 	if trip.State == models.Booked {
+		if m.Tagged && looksLikeHotelAsk(m.Text) {
+			return b.sendHotelPhoto(ctx, trip)
+		}
 		if m.Tagged {
 			return b.answerQuestion(ctx, trip, m)
 		}
@@ -347,11 +355,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"people", len(trip.Participants), "options", len(trip.Options),
 		"origin", trip.Origin, "dates", hasAnyDates(trip.Participants))
 
-	if looksLikeDashboardAsk(m.Text) && m.Tagged {
-		return b.shareDashboard(ctx, trip)
-	}
 	if looksLikeStuck(m.Text) && (m.Tagged || trip.State == models.AwaitingChoice || trip.State == models.AwaitingApproval) {
 		return b.helpDecide(ctx, trip, m)
+	}
+	if m.Tagged && looksLikeHotelAsk(m.Text) {
+		return b.sendHotelPhoto(ctx, trip)
 	}
 	if gated, err := b.maybeGateDetails(ctx, trip, m); gated || err != nil {
 		return err
@@ -715,6 +723,9 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.say(ctx, trip.GroupID, "Okay, dropping this trip. Ping me if you want to start over.", nil)
 	case kind == "question":
+		if looksLikeHotelAsk(m.Text) {
+			return b.sendHotelPhoto(ctx, trip)
+		}
 		if looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}

@@ -32,10 +32,7 @@ func looksLikeStuck(text string) bool {
 }
 
 func (b *Brain) dashboardOnce(trip *models.Trip) string {
-	if trip == nil || trip.SharedDashboard {
-		return ""
-	}
-	return strings.TrimSpace(b.Config.DashboardURL)
+	return ""
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {

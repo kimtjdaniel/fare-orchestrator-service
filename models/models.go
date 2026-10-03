@@ -358,7 +358,8 @@ type HotelOffer struct {
 	TotalPrice    float64  `json:"total_price"`
 	Currency      string   `json:"currency"`
 	Rating        *float64 `json:"rating,omitempty"`
-	CheckoutURL   string   `json:"checkout_url,omitempty"` // page Skyvern drives to book it
+	CheckoutURL   string   `json:"checkout_url,omitempty"`
+	ImageURL      string   `json:"image_url,omitempty"`
 }
 
 type FlightBooking struct {

@@ -42,3 +42,12 @@ func TestHarvestParenAirport(t *testing.T) {
 		t.Fatalf("airport %q", h.Airport)
 	}
 }
+
+func TestLooksLikeHotelAsk(t *testing.T) {
+	if !looksLikeHotelAsk("show us the hotel") {
+		t.Fatal("expected hotel ask")
+	}
+	if looksLikeHotelAsk("what should we eat") {
+		t.Fatal("did not expect hotel ask")
+	}
+}

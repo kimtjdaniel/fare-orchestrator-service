@@ -129,6 +129,6 @@ func Load() *Settings {
 		HotelCheckoutURL: getenv("HOTEL_CHECKOUT_URL", "https://example-fake-hotel.vercel.app"),
 		SkyvernMaxSteps:  intEnv("SKYVERN_MAX_STEPS", 25),
 
-		DashboardURL: getenv("DASHBOARD_URL", "http://localhost:3001"),
+		DashboardURL: getenv("DASHBOARD_URL", ""),
 	}
 }

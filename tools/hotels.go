@@ -31,14 +31,14 @@ func SearchHotels(ctx context.Context, cfg *config.Settings, city, checkIn, chec
 	}
 
 	type seed struct {
-		slug, name string
-		nightly    float64
-		rating     float64
+		slug, name, image string
+		nightly           float64
+		rating            float64
 	}
 	seeds := []seed{
-		{"harbor", fmt.Sprintf("Harbor View Suites %s", city), 189.0, 4.4},
-		{"casa", fmt.Sprintf("Casa Linda %s", city), 149.0, 4.1},
-		{"grand", fmt.Sprintf("The Grand %s", city), 329.0, 4.8},
+		{"harbor", fmt.Sprintf("Harbor View Suites %s", city), "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80", 189.0, 4.4},
+		{"casa", fmt.Sprintf("Casa Linda %s", city), "https://images.unsplash.com/photo-1520250497591-112f2f40a3f4?auto=format&fit=crop&w=1200&q=80", 149.0, 4.1},
+		{"grand", fmt.Sprintf("The Grand %s", city), "https://images.unsplash.com/photo-1542314831-068cd1dbfeeb?auto=format&fit=crop&w=1200&q=80", 329.0, 4.8},
 	}
 	offers := make([]models.HotelOffer, 0, len(seeds))
 	for _, s := range seeds {
@@ -47,7 +47,7 @@ func SearchHotels(ctx context.Context, cfg *config.Settings, city, checkIn, chec
 			OfferID: "mock_hotel_" + s.slug, Name: s.name, City: city,
 			CheckIn: checkIn, CheckOut: checkOut,
 			PricePerNight: s.nightly, TotalPrice: s.nightly * float64(nights), Currency: "CAD",
-			Rating: &rating,
+			Rating: &rating, ImageURL: s.image,
 			CheckoutURL: fmt.Sprintf("%s/book?hotel=%s&check_in=%s&check_out=%s&guests=%d",
 				cfg.HotelCheckoutURL, s.slug, checkIn, checkOut, guests),
 		})

@@ -26,12 +26,20 @@ type Button struct {
 type Messenger interface {
 	Send(ctx context.Context, groupID, text string, buttons []Button) error
 	SendPoll(ctx context.Context, groupID string, poll Poll) error
+	SendMedia(ctx context.Context, groupID, caption string, media Media) error
 }
 
 type Poll struct {
 	Name                 string
 	Options              []string
 	AllowMultipleAnswers bool
+}
+
+type Media struct {
+	URL        string
+	Mimetype   string
+	Filename   string
+	DataBase64 string
 }
 
 // ---------- console ----------
@@ -64,6 +72,14 @@ func (m *ConsoleMessenger) SendPoll(ctx context.Context, groupID string, poll Po
 	return m.Send(ctx, groupID, poll.Name+"\n"+strings.Join(poll.Options, " | "), nil)
 }
 
+func (m *ConsoleMessenger) SendMedia(ctx context.Context, groupID, caption string, media Media) error {
+	label := media.URL
+	if label == "" {
+		label = media.Filename
+	}
+	return m.Send(ctx, groupID, strings.TrimSpace(caption+"\n[photo: "+label+"]"), nil)
+}
+
 func joinStrings(ss []string, sep string) string {
 	out := ""
 	for i, s := range ss {
@@ -86,7 +102,7 @@ type RobotMessenger struct {
 }
 
 func NewRobotMessenger(robotURL, token string) *RobotMessenger {
-	return &RobotMessenger{RobotURL: robotURL, Token: token, HTTPClient: &http.Client{Timeout: 15 * time.Second}}
+	return &RobotMessenger{RobotURL: robotURL, Token: token, HTTPClient: &http.Client{Timeout: 45 * time.Second}}
 }
 
 func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons []Button) error {
@@ -150,6 +166,43 @@ func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll
 	return nil
 }
 
+func (m *RobotMessenger) SendMedia(ctx context.Context, groupID, caption string, media Media) error {
+	payload := map[string]any{
+		"group_id": groupID,
+		"chat_id":  groupID,
+		"media": map[string]any{
+			"url":         media.URL,
+			"mimetype":    media.Mimetype,
+			"filename":    media.Filename,
+			"data_base64": media.DataBase64,
+		},
+	}
+	if strings.TrimSpace(caption) != "" {
+		payload["text"] = caption
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.RobotURL+"/send", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	if m.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+m.Token)
+	}
+	resp, err := m.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("robot /send media: status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // ---------- telegram ----------
 
 type TelegramMessenger struct {
@@ -202,6 +255,32 @@ func (m *TelegramMessenger) SendPoll(ctx context.Context, groupID string, poll P
 		buttons = append(buttons, Button{Label: opt, Payload: payload})
 	}
 	return m.Send(ctx, groupID, poll.Name, buttons)
+}
+
+func (m *TelegramMessenger) SendMedia(ctx context.Context, groupID, caption string, media Media) error {
+	if media.URL == "" {
+		return m.Send(ctx, groupID, caption, nil)
+	}
+	body := map[string]any{"chat_id": groupID, "photo": media.URL, "caption": caption}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendPhoto", m.BotToken)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	resp, err := m.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return m.Send(ctx, groupID, caption, nil)
+	}
+	return nil
 }
 
 // ---------- factory ----------

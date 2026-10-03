@@ -71,9 +71,6 @@ func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL 
 		lines = append(lines, "")
 	}
 	lines = append(lines, "Tap the poll below, or reply 1, 2, or 3.")
-	if dashboardURL != "" {
-		lines = append(lines, DashboardLink(dashboardURL, tripID))
-	}
 	return strings.Join(lines, "\n")
 }
 
@@ -121,9 +118,6 @@ func SummaryMessage(option models.Option, itinerary map[string]any, people []mod
 	}
 	lines = append(lines, "")
 	lines = append(lines, "Yes to book it, or no to look at the other options. There's a poll for that too.")
-	if dashboardURL != "" {
-		lines = append(lines, DashboardLink(dashboardURL, tripID))
-	}
 	return strings.Join(lines, "\n")
 }
 
