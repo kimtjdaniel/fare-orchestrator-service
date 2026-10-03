@@ -1,9 +1,7 @@
-// Package prompts holds system prompts + the JSON schemas Claude fills in.
+// Package prompts holds system prompts + the JSON schemas Gemini fills in.
 //
-// Pattern: each stage asks Claude for JSON matching a schema (structured outputs), so the answer
-// always parses. Code then decides what to do with it.
-// Note: forced tool_choice is NOT supported on Sonnet 5.5 / Opus 5.5, which is why structured
-// outputs are used instead of the older "force a tool call" trick.
+// Pattern: each stage asks Gemini for JSON matching a schema (generationConfig.responseSchema),
+// so the answer always parses. Code then decides what to do with it.
 // Tweak wording here freely; keep the schemas in sync with models/models.go.
 package prompts
 
@@ -65,10 +63,10 @@ Trip context: %s`, botName, context)
 }
 
 // ---------------- output schemas ----------------
-// Sent as structured outputs (output_config json_schema), so Claude's reply is guaranteed to
-// parse. Structured-output schema rules (per Anthropic docs): every object needs
-// "additionalProperties": false; no "format", "default", "minItems"/"maxItems", or ["x","null"]
-// types. Unknown values are simply left out (so keep them out of "required").
+// Plain JSON Schema (lowercase types, "additionalProperties": false); llm.GeminiLLM converts this
+// into Gemini's OpenAPI-subset Schema shape (uppercase type enum, additionalProperties stripped)
+// before sending it as generationConfig.responseSchema. Keep writing schemas in this plain form —
+// the conversion is the client's job, not the prompt author's.
 
 var generalPreferences = map[string]any{
 	"type": "object",

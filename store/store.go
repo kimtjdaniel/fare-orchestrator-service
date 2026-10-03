@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"time"
 
-	"yate-brain/models"
-	"yate-brain/state"
+	"fare-brain/models"
+	"fare-brain/state"
 )
 
 type Store interface {

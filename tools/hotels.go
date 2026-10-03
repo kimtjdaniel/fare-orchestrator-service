@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"yate-brain/config"
-	"yate-brain/models"
+	"fare-brain/config"
+	"fare-brain/models"
 )
 
 // SearchHotels returns offers that fit guests in one booking, cheapest total first.

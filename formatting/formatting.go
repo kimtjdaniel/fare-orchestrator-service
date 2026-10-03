@@ -1,4 +1,4 @@
-// Package formatting builds chat message templates. Built by code (not Claude) so they're
+// Package formatting builds chat message templates. Built by code (not Gemini) so they're
 // instant, cheap, and never malformed. Polish the wording here during rehearsal.
 package formatting
 
@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"yate-brain/models"
-	"yate-brain/tools"
+	"fare-brain/models"
+	"fare-brain/tools"
 )
 
 var numberEmoji = map[int]string{1: "1️⃣", 2: "2️⃣", 3: "3️⃣"}

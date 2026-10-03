@@ -1,6 +1,6 @@
 package llm
 
-// Canned Claude outputs for MOCK_LLM=true. They match testdata/demo_transcript.json. When the
+// Canned Gemini outputs for MOCK_LLM=true. They match testdata/demo_transcript.json. When the
 // demo script changes, update both files together.
 
 var mayaAvailability = []any{

@@ -16,11 +16,9 @@ type Settings struct {
 	MockBrowser             bool
 	MockBookingDelaySeconds float64
 
-	AnthropicAPIKey string
-	AnthropicModel  string
-	GeminiAPIKey    string
-	GeminiModel     string
-	LLMCacheDir     string
+	GeminiAPIKey string
+	GeminiModel  string
+	LLMCacheDir  string
 
 	MongoURI string
 	MongoDB  string
@@ -93,21 +91,19 @@ func Load() *Settings {
 		MockBrowser:             boolEnv("MOCK_BROWSER", true),
 		MockBookingDelaySeconds: floatEnv("MOCK_BOOKING_DELAY", 3),
 
-		AnthropicAPIKey: getenv("ANTHROPIC_API_KEY", ""),
-		AnthropicModel:  getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"),
-		GeminiAPIKey:    getenv("GEMINI_API_KEY", ""),
-		GeminiModel:     getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-		LLMCacheDir:     getenv("LLM_CACHE_DIR", ".llm_cache"),
+		GeminiAPIKey: getenv("GEMINI_API_KEY", ""),
+		GeminiModel:  getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+		LLMCacheDir:  getenv("LLM_CACHE_DIR", ".llm_cache"),
 
 		MongoURI: getenv("MONGODB_URI", ""),
-		MongoDB:  getenv("MONGODB_DB", "yate"),
+		MongoDB:  getenv("MONGODB_DB", "fare"),
 
 		MessagingBackend:      getenv("MESSAGING_BACKEND", "console"),
 		RobotURL:              getenv("ROBOT_URL", "http://localhost:3000"),
 		TelegramBotToken:      getenv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramBotUsername:   getenv("TELEGRAM_BOT_USERNAME", ""),
 		TelegramWebhookSecret: getenv("TELEGRAM_WEBHOOK_SECRET", ""),
-		BotName:               getenv("BOT_NAME", "Yate"),
+		BotName:               getenv("BOT_NAME", "Fare"),
 		Timezone:              getenv("TIMEZONE", "America/Vancouver"),
 
 		SkyvernAPIKey:    getenv("SKYVERN_API_KEY", ""),

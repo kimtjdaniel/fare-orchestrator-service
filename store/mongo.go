@@ -9,7 +9,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"yate-brain/models"
+	"fare-brain/models"
 )
 
 // MongoStore is the MongoDB-backed Store. Each trip is a singleton document per group (_id ==

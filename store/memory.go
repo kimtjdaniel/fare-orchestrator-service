@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"yate-brain/models"
+	"fare-brain/models"
 )
 
 // MemoryStore is used when MONGODB_URI is empty (solo dev, tests). Lost on restart.
