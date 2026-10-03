@@ -3,7 +3,6 @@
 //
 //	go run ./scripts/smoke db        # connect, ensure indexes, list collections    (free)
 //	go run ./scripts/smoke gemini    # one tiny structured-output call              (~$0.001)
-//	go run ./scripts/smoke schemas   # send all 3 brain schemas once, real transcript (~$0.02)
 //	go run ./scripts/smoke telegram  # getMe + getWebhookInfo                       (free)
 //
 // The Python version's `skyvern` subcommand is dropped — there's no official Go SDK, and the
@@ -27,11 +26,6 @@ import (
 
 func ok(msg string)   { fmt.Printf("✅ %s\n", msg) }
 func fail(msg string) { fmt.Printf("❌ %s\n", msg); os.Exit(1) }
-
-func printJSON(v any) {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Println(string(b))
-}
 
 func toSchema(m map[string]any) llm.Schema {
 	name, _ := m["name"].(string)
@@ -67,81 +61,6 @@ func smokeGemini(cfg *config.Settings) {
 		fail(err.Error())
 	}
 	ok(fmt.Sprintf("%s answered: %v", cfg.GeminiModel, out))
-}
-
-func smokeSchemas(cfg *config.Settings) {
-	c := geminiClient(cfg)
-	raw, err := os.ReadFile("testdata/demo_transcript.json")
-	if err != nil {
-		fail(err.Error())
-	}
-	var transcript struct {
-		Messages []struct {
-			SenderName string `json:"sender_name"`
-			Text       string `json:"text"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(raw, &transcript); err != nil {
-		fail(err.Error())
-	}
-	chat := ""
-	for i, m := range transcript.Messages {
-		if i > 0 {
-			chat += "\n"
-		}
-		chat += fmt.Sprintf("%s: %s", m.SenderName, m.Text)
-	}
-	loc, err := time.LoadLocation(cfg.Timezone)
-	if err != nil {
-		loc = time.UTC
-	}
-	today := time.Now().In(loc).Format("2006-01-02")
-	ctx := context.Background()
-
-	prefs, err := c.Structured(ctx, prompts.ExtractSystem(today),
-		[]llm.Message{{Role: "user", Content: fmt.Sprintf("Group chat:\n%s", chat)}}, toSchema(prompts.RecordPreferences))
-	if err != nil {
-		fail(err.Error())
-	}
-	var names []string
-	if people, ok := prefs["participants"].([]any); ok {
-		for _, p := range people {
-			if m, ok := p.(map[string]any); ok {
-				if n, ok := m["name"].(string); ok {
-					names = append(names, n)
-				}
-			}
-		}
-	}
-	ok(fmt.Sprintf("record_preferences: %v", names))
-	printJSON(prefs)
-
-	participantsJSON, _ := json.Marshal(prefs["participants"])
-	opts, err := c.Structured(ctx, prompts.ProposeSystem(cfg.BotName, today, ""),
-		[]llm.Message{{Role: "user", Content: "Participants:\n" + string(participantsJSON)}}, toSchema(prompts.ProposeOptions))
-	if err != nil {
-		fail(err.Error())
-	}
-	var destinations []string
-	if options, ok := opts["options"].([]any); ok {
-		for _, o := range options {
-			if m, ok := o.(map[string]any); ok {
-				if d, ok := m["destination"].(string); ok {
-					destinations = append(destinations, d)
-				}
-			}
-		}
-	}
-	ok(fmt.Sprintf("propose_options: %v", destinations))
-	printJSON(opts)
-
-	intent, err := c.Structured(ctx, prompts.InterpretSystem("AWAITING_CHOICE", "1. A; 2. B"),
-		[]llm.Message{{Role: "user", Content: "@Fare let's do the second one"}}, toSchema(prompts.InterpretReply))
-	if err != nil {
-		fail(err.Error())
-	}
-	ok(fmt.Sprintf("interpret_reply: %v", intent))
-	fmt.Println("\nTip: paste the record_preferences output into llm/mock_data.go to make mocks realistic.")
 }
 
 func smokeTelegram(cfg *config.Settings) {
@@ -200,7 +119,7 @@ func getJSON(client *http.Client, url string) (map[string]any, error) {
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Println("usage: smoke <db|gemini|schemas|telegram>")
+		fmt.Println("usage: smoke <db|gemini|telegram>")
 		os.Exit(1)
 	}
 	cfg := config.Load()
@@ -209,12 +128,10 @@ func main() {
 		smokeDB(cfg)
 	case "gemini":
 		smokeGemini(cfg)
-	case "schemas":
-		smokeSchemas(cfg)
 	case "telegram":
 		smokeTelegram(cfg)
 	default:
-		fmt.Println("usage: smoke <db|gemini|schemas|telegram>")
+		fmt.Println("usage: smoke <db|gemini|telegram>")
 		os.Exit(1)
 	}
 }

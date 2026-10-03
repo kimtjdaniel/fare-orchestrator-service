@@ -1,4 +1,4 @@
--- Fare brain schema. Paste into Supabase SQL editor, or: psql "$DATABASE_URL" -f db/schema.sql
+-- Fare fare-orchestrator-service schema. Paste into Supabase SQL editor, or: psql "$DATABASE_URL" -f db/schema.sql
 -- Safe to re-run: everything is IF NOT EXISTS.
 
 -- gen_random_uuid() is built into Postgres 13+ (Supabase included), so no extension needed.
