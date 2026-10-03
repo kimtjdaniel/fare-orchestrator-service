@@ -269,6 +269,8 @@ type Trip struct {
 	ApprovedBy   string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
 	ApprovedAt   *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
 	HistoryStart *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
+	AskedOrigin  bool           `json:"asked_origin" bson:"asked_origin"`
+	AskedDates   bool           `json:"asked_dates" bson:"asked_dates"`
 	CreatedAt    time.Time      `json:"created_at" bson:"created_at"`
 	UpdatedAt    time.Time      `json:"updated_at" bson:"updated_at"`
 }

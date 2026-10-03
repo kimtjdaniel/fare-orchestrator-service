@@ -86,7 +86,8 @@ func (s *MongoStore) GetMessages(ctx context.Context, groupID string, since *tim
 		filter = append(filter, bson.E{Key: "sent_at", Value: bson.D{{Key: "$gt", Value: *since}}})
 	}
 	if !includeBot {
-		filter = append(filter, bson.E{Key: "is_bot", Value: false})
+		// $ne true also matches docs where is_bot is missing (plain false does not).
+		filter = append(filter, bson.E{Key: "is_bot", Value: bson.D{{Key: "$ne", Value: true}}})
 	}
 	opts := options.Find().SetSort(bson.D{{Key: "sent_at", Value: -1}}).SetLimit(int64(limit))
 	cur, err := s.msgs.Find(ctx, filter, opts)
@@ -98,7 +99,6 @@ func (s *MongoStore) GetMessages(ctx context.Context, groupID string, since *tim
 	if err := cur.All(ctx, &rows); err != nil {
 		return nil, err
 	}
-	// reverse: query above fetched newest-first (to apply the limit), callers want chronological.
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]
 	}
@@ -130,12 +130,28 @@ func (s *MongoStore) GetTrip(ctx context.Context, tripID string) (*models.Trip, 
 	var trip models.Trip
 	err := s.trips.FindOne(ctx, bson.D{{Key: "_id", Value: tripID}}).Decode(&trip)
 	if err == mongo.ErrNoDocuments {
+		err = s.trips.FindOne(ctx, bson.D{{Key: "group_id", Value: tripID}}).Decode(&trip)
+	}
+	if err == mongo.ErrNoDocuments {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	normalizeTrip(&trip, tripID)
 	return &trip, nil
+}
+
+func normalizeTrip(trip *models.Trip, fallbackID string) {
+	if trip.ID == "" {
+		trip.ID = fallbackID
+	}
+	if trip.GroupID == "" {
+		trip.GroupID = trip.ID
+	}
+	if trip.State == "" {
+		trip.State = models.Collecting
+	}
 }
 
 func (s *MongoStore) ResetTrip(ctx context.Context, tripID, groupName string) (*models.Trip, error) {

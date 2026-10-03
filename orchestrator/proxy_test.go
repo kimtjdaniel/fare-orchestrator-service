@@ -7,6 +7,15 @@ import (
 	"fare-brain/models"
 )
 
+func TestLooksLikeItineraryAsk(t *testing.T) {
+	if !looksLikeItineraryAsk("can you write a full 7 day itinerary") {
+		t.Fatal("expected itinerary")
+	}
+	if looksLikeItineraryAsk("he's flying from YVR") {
+		t.Fatal("origin is not an itinerary ask")
+	}
+}
+
 func TestLooksLikePrefUpdate(t *testing.T) {
 	people := []models.Participant{{WhatsAppName: "Tom Chen"}}
 	roster := []models.GroupMember{{Name: "Tom Chen"}, {Name: "Priya"}}
@@ -22,6 +31,7 @@ func TestLooksLikePrefUpdate(t *testing.T) {
 		{"lets get pizza later", false},
 		{"can't make dinner tonight", false},
 		{"2", false},
+		{"give me a full 7 day itinerary", false},
 	}
 	for _, c := range cases {
 		got := looksLikePrefUpdate(c.text, people, roster)

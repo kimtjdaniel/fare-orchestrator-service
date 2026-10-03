@@ -143,6 +143,32 @@ func ConfirmationMessage(destination, embarkingPNR, returningPNR, hotelRef strin
 	return strings.Join(lines, "\n")
 }
 
+func AdvisorItinerary(planned map[string]any) string {
+	intro, _ := planned["intro"].(string)
+	var lines []string
+	if strings.TrimSpace(intro) != "" {
+		lines = append(lines, strings.TrimSpace(intro), "")
+	}
+	days, _ := planned["days"].([]any)
+	for i, raw := range days {
+		d, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, _ := d["title"].(string)
+		body, _ := d["body"].(string)
+		if strings.TrimSpace(title) == "" {
+			title = fmt.Sprintf("Day %d", i+1)
+		}
+		lines = append(lines, strings.TrimSpace(title))
+		if strings.TrimSpace(body) != "" {
+			lines = append(lines, strings.TrimSpace(body))
+		}
+		lines = append(lines, "")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func toFloatPtr(v any) *float64 {
 	switch n := v.(type) {
 	case float64:

@@ -84,6 +84,7 @@ var allowedTripFields = map[string]bool{
 	"origin": true, "destination": true, "destination_airport": true,
 	"activity_description": true, "culinary_description": true, "duration_nights": true,
 	"cost_per_person": true, "embarking_date": true, "returning_date": true,
+	"asked_origin": true, "asked_dates": true,
 }
 
 // applyTripFields mutates trip in place from a whitelisted fields map, shared by MemoryStore and
@@ -156,6 +157,10 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			trip.EmbarkingDate, _ = v.(string)
 		case "returning_date":
 			trip.ReturningDate, _ = v.(string)
+		case "asked_origin":
+			trip.AskedOrigin, _ = v.(bool)
+		case "asked_dates":
+			trip.AskedDates, _ = v.(bool)
 		}
 	}
 	trip.UpdatedAt = models.Now()

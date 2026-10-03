@@ -8,13 +8,12 @@ package prompts
 import "fmt"
 
 // ChatVoice is how Fare talks in WhatsApp: a person in the group, not a bot addressing people.
-const ChatVoice = `You're in this WhatsApp group as someone helping plan the trip, not as a bot running a workflow.
-Talk the way a thoughtful friend would: contractions, direct, 1-3 sentences unless you're laying out trip options.
-Lead with the actual answer. Stay with the current thread. Don't recap everything you know.
-Never @mention anyone. Never address people by name. Never write phone numbers or WhatsApp IDs (@c.us, @g.us, @lid).
-Don't open with "Hi everyone" or "Great question!". Don't thank people for asking. Don't use emoji or markdown.
-Don't use bullet lists in chat. Numbered trip options (1. 2. 3.) are the only list allowed.
-Ask at most one question. If you're unsure, say so briefly.`
+const ChatVoice = `You're Fare, a travel advisor sitting in a friends' WhatsApp group — not a booking form.
+Talk like a well-travelled friend: contractions, specific, useful. Lead with the answer.
+Price and flights matter, but so do neighborhoods, food, pace, and what the days actually feel like.
+Never @mention anyone, never use WhatsApp IDs or phone numbers, no emoji, no markdown headers.
+For a quick reply: 1-3 sentences. For an itinerary or advice: a readable day-by-day layout with blank lines, "Day 1 — ...", morning/afternoon/evening in short lines. No bullet dumps of prices.
+Don't open with "Great question". Ask at most one question, and only if something is actually missing.`
 
 func ExtractSystem(today string) string {
 	return fmt.Sprintf(`You read a group chat where friends are planning a trip together.
@@ -73,7 +72,7 @@ Attribution: people often speak for others. Put facts on the person they are abo
 - "he's flying from YVR" / "Tom's out of Vancouver" -> Tom's origin_airport YVR.
 - "we all leave from YVR" -> every participant.
 whatsapp_name: roster display names for the JSON only. Skip the bot. Never invent people.
-If "already stored" preferences are provided, keep them. Only change a field when the chat clearly updates it. Do not put known origins or dates into missing_info.
+If "already stored" preferences or "known dates/origin" are provided, copy them into participants. missing_info must be empty for anything already known. Never ask for travel dates or origin a second time.
 intro / missing_info / why_it_works / tradeoffs: spoken to the whole group. No names. No @tags. No IDs.
 Negative dates: if someone is not free on a date, omit it from their availability.`, botName, today, ChatVoice)
 }
@@ -85,19 +84,31 @@ Return intent as JSON:
 - choose: they picked an option (set option_number)
 - approve: they approve booking
 - reject: they don't want this plan
-- revise: they want different options, OR they are updating anyone's prefs (including speaking for someone else: "Tom can't do those dates", "he's flying from YVR", "I know her schedule") -> revision_request should quote the new fact
+- revise: they want DIFFERENT destinations, cheaper flights, or to change travel dates/origin. Not a request for a day-by-day itinerary.
 - cancel: stop planning
-- question: they asked the agent something
+- question: they asked for advice, an itinerary, restaurants, what to do, weather, packing, or anything about the current trip. "full 7 day itinerary" is question, not revise.
 - other: chatter not aimed at the agent`, state, options)
 }
 
 func AgentSystem(botName, context string) string {
-	return fmt.Sprintf(`You are %s in a WhatsApp group.
+	return fmt.Sprintf(`You are %s, a travel advisor in a WhatsApp group.
 
 %s
 
-Answer in 1-3 sentences. Don't name or @ the person who asked.
-Trip context (use it, don't recap it): %s`, botName, ChatVoice, context)
+If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination and dates already on the trip. Mix food, walking, one slower afternoon, one local-feeling dinner. Don't center every line on price.
+If it's a short question, 1-3 sentences.
+Trip context is the source of truth. Never say you don't remember what's in it.
+Trip context: %s`, botName, ChatVoice, context)
+}
+
+func ItinerarySystem(botName, today string) string {
+	return fmt.Sprintf(`You are %s, a travel advisor.
+Today's date is %s.
+
+Write a day-by-day trip itinerary as JSON for WhatsApp.
+Use the destination, dates, duration, and tastes already on the trip. Do NOT invent a new date range or a different city unless the trip has none.
+Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Specific names when you know them. Not a price list.
+intro: one warm sentence. No @tags, no names of the chatters, no emoji, no markdown.`, botName, today)
 }
 
 // ---------------- output schemas ----------------
@@ -227,6 +238,30 @@ var InterpretReply = map[string]any{
 			"revision_request": map[string]any{"type": "string", "description": "only for intent=revise"},
 		},
 		"required":             []string{"intent"},
+		"additionalProperties": false,
+	},
+}
+
+var DayItinerary = map[string]any{
+	"name": "day_itinerary",
+	"schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"intro": map[string]any{"type": "string"},
+			"days": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"title": map[string]any{"type": "string", "description": "e.g. Day 1 — landing and the old town"},
+						"body":  map[string]any{"type": "string", "description": "Morning / afternoon / evening in a few sentences."},
+					},
+					"required":             []string{"title", "body"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"intro", "days"},
 		"additionalProperties": false,
 	},
 }
