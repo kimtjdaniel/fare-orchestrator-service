@@ -3,6 +3,7 @@
 package formatting
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -165,21 +166,94 @@ func AdvisorItinerary(planned map[string]any) string {
 }
 
 func LockedTravel(trip *models.Trip) string {
-	if trip == nil || trip.Itinerary == nil {
+	return LockedStatus(trip)
+}
+
+func LockedStatus(trip *models.Trip) string {
+	if trip == nil {
 		return ""
 	}
-	opt := models.Option{
-		Destination: trip.Destination, EmbarkingDate: trip.EmbarkingDate,
-		ReturningDate: trip.ReturningDate, DurationNights: trip.DurationNights,
-	}
+	var lines []string
+	dest := trip.Destination
+	embark, retDate := trip.EmbarkingDate, trip.ReturningDate
 	if o := trip.ChosenOption(); o != nil {
-		opt = *o
+		if dest == "" {
+			dest = o.Destination
+		}
+		if embark == "" {
+			embark, retDate = o.EmbarkingDate, o.ReturningDate
+		}
 	}
-	s := SummaryMessage(opt, trip.Itinerary, trip.Participants, trip.ID, "")
-	if i := strings.LastIndex(s, "Yes to book"); i >= 0 {
-		s = strings.TrimSpace(s[:i])
+	head := strings.TrimSpace(dest)
+	if embark != "" {
+		if head != "" {
+			head += ", "
+		}
+		head += Dates(embark, retDate)
 	}
-	return s
+	if head != "" {
+		lines = append(lines, "Here's what's locked:", head+".")
+	} else {
+		lines = append(lines, "Here's what's locked:")
+	}
+	if origin := strings.TrimSpace(trip.Origin); origin != "" {
+		lines = append(lines, "Flying out of "+origin+".")
+	}
+
+	itin := asMap(trip.Itinerary)
+	flights := asMap(itin["flights"])
+	out := asMap(flights["embarking"])
+	ret := asMap(flights["returning"])
+	if out == nil && ret == nil {
+		lines = append(lines, "Flights: not searched yet.")
+	}
+	if out != nil {
+		lines = append(lines, fmt.Sprintf("Out: %v, %v → %v, %s.", out["airline"], out["origin"], out["destination"], Money(toFloatPtr(out["price"]))))
+	}
+	if ret != nil {
+		lines = append(lines, fmt.Sprintf("Back: %v, %v → %v, %s.", ret["airline"], ret["origin"], ret["destination"], Money(toFloatPtr(ret["price"]))))
+	}
+
+	hotel := asMap(itin["hotel"])
+	if hotel != nil && hotel["name"] != nil {
+		lines = append(lines, fmt.Sprintf("Stay: %v, %s total (%s a night).",
+			hotel["name"], Money(toFloatPtr(hotel["total_price"])), Money(toFloatPtr(hotel["price_per_night"]))))
+	}
+
+	if trip.CostPerPerson != nil {
+		lines = append(lines, fmt.Sprintf("About %s each.", Money(trip.CostPerPerson)))
+	} else if gt := toFloatPtr(itin["group_total"]); gt != nil && len(trip.Participants) > 0 {
+		each := *gt / float64(len(trip.Participants))
+		lines = append(lines, fmt.Sprintf("About %s each.", Money(&each)))
+	}
+
+	switch trip.State {
+	case models.AwaitingApproval:
+		lines = append(lines, "Waiting on yes/no to book.")
+	case models.AwaitingChoice:
+		lines = append(lines, "Waiting on a 1, 2, or 3 for the destination.")
+	case models.Booked:
+		lines = append(lines, "Already booked (sandbox).")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func asMap(v any) map[string]any {
+	if v == nil {
+		return map[string]any{}
+	}
+	if m, ok := v.(map[string]any); ok {
+		return m
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
 }
 
 func OptionPollChoices(options []models.Option) []string {

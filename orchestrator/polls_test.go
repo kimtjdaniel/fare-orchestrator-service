@@ -62,6 +62,19 @@ func TestLooksLikeHotelAsk(t *testing.T) {
 	if !wantsHotelPhoto(trip, m) {
 		t.Fatal("expected send-it after hotel caption")
 	}
+	flights := models.IncomingMessage{
+		Text:   "what about the flights",
+		Quoted: &models.QuotedMessage{Text: "I'm sending the photo of the property over to the group now.", FromMe: true},
+	}
+	if wantsHotelPhoto(trip, flights) {
+		t.Fatal("flight ask must not resend the hotel caption")
+	}
+	if !looksLikeFlightAsk(flights.Text) || !looksLikeStatusAsk("update me on what's going on, what's locked in right now") {
+		t.Fatal("expected status/flight asks")
+	}
+	if wantsHotelPhoto(trip, models.IncomingMessage{Text: "update me on what's going on", Quoted: &models.QuotedMessage{Text: "you made the right call picking the Amalfi Coast"}}) {
+		t.Fatal("picking must not look like a photo ask")
+	}
 	if !looksLikeCheaperAsk("are there cheaper opptions? for flight?") {
 		t.Fatal("expected cheaper ask")
 	}

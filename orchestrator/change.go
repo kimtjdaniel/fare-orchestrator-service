@@ -136,7 +136,7 @@ func (b *Brain) maybeGateDetails(ctx context.Context, trip *models.Trip, m model
 	if trip == nil || strings.TrimSpace(m.Text) == "" {
 		return false, nil
 	}
-	if looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) {
+	if looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) || looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeHotelAsk(m.Text) {
 		return false, nil
 	}
 	change := b.proposedLockedChange(trip, m.Text)

@@ -43,9 +43,11 @@ var (
 	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
 	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
 	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|what (should|can|do) we do|where to eat|restaurant|neighbourhood|neighborhood|hidden gem|full \d+\s*-?\s*days?|advise|recommend)`)
-	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|the stay|where (?:are|we'?re|will) we stay|accommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|(?:pic|photo|picture|shot)s?(?:\s+of)?(?:\s+(?:the )?(?:hotel|stay|room))?|\b(?:pics?|photos?|pictures?|shots?)\b)`)
+	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
 	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
 	cheaperAskRe   = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
+	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked)\b`)
+	flightAskRe    = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
 )
 
 type Brain struct {
@@ -191,6 +193,14 @@ func looksLikeCheaperAsk(text string) bool {
 	return cheaperAskRe.MatchString(text)
 }
 
+func looksLikeStatusAsk(text string) bool {
+	return statusAskRe.MatchString(text)
+}
+
+func looksLikeFlightAsk(text string) bool {
+	return flightAskRe.MatchString(text)
+}
+
 func quotedText(m models.IncomingMessage) string {
 	if m.Quoted == nil {
 		return ""
@@ -198,20 +208,16 @@ func quotedText(m models.IncomingMessage) string {
 	return strings.TrimSpace(m.Quoted.Text)
 }
 
+// wantsHotelPhoto is only for the current line asking for the stay/photo — never
+// because a quoted bot message happened to say "photo" or "picking".
 func wantsHotelPhoto(trip *models.Trip, m models.IncomingMessage) bool {
-	q := quotedText(m)
-	if looksLikeHotelAsk(m.Text) || looksLikeHotelAsk(q) {
+	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+		return false
+	}
+	if looksLikeSendIt(m.Text) {
 		return true
 	}
-	if looksLikeHotelAsk(q) || strings.Contains(strings.ToLower(q), "a night") {
-		return looksLikeSendIt(m.Text) || looksLikeHotelAsk(m.Text)
-	}
-	if trip != nil && trip.Itinerary != nil {
-		if raw, ok := trip.Itinerary["hotel"]; ok && raw != nil {
-			return looksLikeSendIt(m.Text) || looksLikeHotelAsk(m.Text)
-		}
-	}
-	return false
+	return looksLikeHotelAsk(m.Text)
 }
 
 func looksLikePrefUpdate(text string, people []models.Participant, roster []models.GroupMember) bool {
@@ -371,6 +377,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if !m.Tagged {
 			return nil
 		}
+		if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+			return b.postLockedStatus(ctx, trip)
+		}
 		if wantsHotelPhoto(trip, m) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) {
 			return b.sendHotelPhoto(ctx, trip)
 		}
@@ -417,6 +426,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	if looksLikeStuck(m.Text) && (m.Tagged || trip.State == models.AwaitingChoice || trip.State == models.AwaitingApproval) {
 		return b.helpDecide(ctx, trip, m)
+	}
+	if m.Tagged && (looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text)) {
+		return b.postLockedStatus(ctx, trip)
 	}
 	if m.Tagged && wantsHotelPhoto(trip, m) {
 		return b.sendHotelPhoto(ctx, trip)
@@ -786,6 +798,9 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 	case kind == "cheaper":
 		return b.offerCheaperFlights(ctx, trip, m)
 	case kind == "question":
+		if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+			return b.postLockedStatus(ctx, trip)
+		}
 		if wantsHotelPhoto(trip, m) {
 			return b.sendHotelPhoto(ctx, trip)
 		}
@@ -827,6 +842,9 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 		return nil, nil // ordinary chatter: saved, but no reply and no LLM spend
 	}
 	if looksLikeItineraryAsk(m.Text) {
+		return map[string]any{"intent": "question"}, nil
+	}
+	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
 	if looksLikeCheaperAsk(m.Text) {
@@ -910,6 +928,14 @@ func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.
 		return err
 	}
 	return b.say(ctx, trip.GroupID, answer, nil)
+}
+
+func (b *Brain) postLockedStatus(ctx context.Context, trip *models.Trip) error {
+	text := formatting.LockedStatus(trip)
+	if strings.TrimSpace(text) == "" {
+		text = "Nothing is locked yet — I still need a destination and a fare search."
+	}
+	return b.say(ctx, trip.GroupID, text, nil)
 }
 
 func tripDestination(trip *models.Trip) string {

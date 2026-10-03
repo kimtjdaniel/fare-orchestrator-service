@@ -103,7 +103,7 @@ If they want a day-by-day itinerary, write the full days (not new date-range opt
 Never invent a price, airport, airline, or hotel. If a number is not in the facts JSON, do not quote one. Once locked fares exist, ignore older option guesses (like C$3,200).
 Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
-If they asked for a photo or to send the hotel, do not describe random cliffs or cities — the app sends the stay photo itself.
+If they asked for a photo, do not describe scenery and never claim you sent a photo — code sends it or it did not send.
 You cannot cancel bookings or change a booked destination in this reply. Never claim you cancelled or cleared a trip.
 Trip notes: %s`, botName, ChatVoice, context)
 }
