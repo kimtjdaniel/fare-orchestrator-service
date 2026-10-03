@@ -116,6 +116,40 @@ func fitsAvailability(o models.Option, availability []string) bool {
 	return true
 }
 
+func formatGroupRoster(members []models.GroupMember) string {
+	var lines []string
+	for _, p := range members {
+		name := strings.TrimSpace(p.Name)
+		if name == "" || p.IsAgent {
+			continue
+		}
+		lines = append(lines, "- "+name)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// snapNamesToRoster rewrites Gemini's whatsapp_name values onto the real group
+// display names the robot sent, so we don't persist nicknames it invented.
+func snapNamesToRoster(people []models.Participant, roster []models.GroupMember) []models.Participant {
+	var rosterPeople []models.Participant
+	for _, p := range roster {
+		name := strings.TrimSpace(p.Name)
+		if name == "" || p.IsAgent {
+			continue
+		}
+		rosterPeople = append(rosterPeople, models.Participant{WhatsAppName: name, PID: p.ID})
+	}
+	if len(rosterPeople) == 0 {
+		return people
+	}
+	for i := range people {
+		if hit := matchName(people[i].WhatsAppName, rosterPeople); hit != nil {
+			people[i].WhatsAppName = hit.WhatsAppName
+		}
+	}
+	return people
+}
+
 // matchName matches a chat display name to an extracted participant. Chat names and Gemini's
 // extracted names often disagree on nicknames or a last name ("Jordan Lee" in chat vs "Jordan"
 // extracted, or the reverse), so try exact, then substring, then first-name before giving up.
@@ -208,7 +242,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 			if err != nil {
 				return err
 			}
-			return b.plan(ctx, trip, "")
+			return b.plan(ctx, trip, "", m)
 		}
 		return nil
 	}
@@ -221,7 +255,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 			if err != nil {
 				return err
 			}
-			return b.plan(ctx, trip, "")
+			return b.plan(ctx, trip, "", m)
 		}
 		return nil
 	}
@@ -229,7 +263,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	switch trip.State {
 	case models.Collecting:
 		if m.Tagged {
-			return b.plan(ctx, trip, "")
+			return b.plan(ctx, trip, "", m)
 		}
 	case models.AwaitingChoice, models.AwaitingApproval:
 		return b.onReply(ctx, trip, m)
@@ -243,7 +277,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 // ------------------------------------------------------------------ stage: plan
 
-func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string) error {
+func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
 	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 1000, false)
 	if err != nil {
 		return err
@@ -260,8 +294,14 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string) er
 		return err
 	}
 
+	userContent := fmt.Sprintf("Group: %s\n", trip.GroupName)
+	if roster := formatGroupRoster(incoming.Participants); roster != "" {
+		userContent += "People actually in this WhatsApp group (use these exact names for whatsapp_name; skip the bot):\n" + roster + "\n\n"
+	}
+	userContent += "Group chat:\n" + transcript
+
 	extracted, err := b.LLM.Structured(ctx, prompts.ExtractSystem(day),
-		[]llm.Message{{Role: "user", Content: fmt.Sprintf("Group chat:\n%s", transcript)}},
+		[]llm.Message{{Role: "user", Content: userContent}},
 		toSchema(prompts.RecordPreferences))
 	if err != nil {
 		return err
@@ -271,6 +311,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string) er
 	if err := decodeInto(extracted["participants"], &people); err != nil {
 		return err
 	}
+	people = snapNamesToRoster(people, incoming.Participants)
 	if len(people) == 0 {
 		return b.say(ctx, trip.GroupID, "I need a bit more to go on. Where's everyone flying from, "+
 			"which dates work, and what's your budget?", nil)

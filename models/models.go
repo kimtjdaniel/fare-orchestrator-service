@@ -58,10 +58,19 @@ type IncomingMessage struct {
 	GroupName  string `json:"group_name"`
 	SenderID   string `json:"sender_id"`
 	SenderName string `json:"sender_name"`
-	Text       string `json:"text"`
-	Tagged     bool   `json:"tagged"`    // was the bot @mentioned?
-	Timestamp  int64  `json:"timestamp"` // unix seconds
-	MessageID  string `json:"message_id,omitempty"`
+	Participants []GroupMember `json:"participants,omitempty"`
+	Text         string        `json:"text"`
+	Tagged       bool          `json:"tagged"`    // was the bot @mentioned?
+	Timestamp    int64         `json:"timestamp"` // unix seconds
+	MessageID    string        `json:"message_id,omitempty"`
+}
+
+// GroupMember is one WhatsApp group participant as reported by the robot.
+type GroupMember struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	IsAdmin bool   `json:"is_admin,omitempty"`
+	IsAgent bool   `json:"is_agent,omitempty"`
 }
 
 func (m *IncomingMessage) UnmarshalJSON(data []byte) error {

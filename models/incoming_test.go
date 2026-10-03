@@ -59,3 +59,28 @@ func TestIncomingMessageNestedWhatsApp(t *testing.T) {
 		t.Fatalf("nested payload: %+v", m)
 	}
 }
+
+func TestIncomingMessageParticipants(t *testing.T) {
+	raw := []byte(`{
+		"group_id": "1203@g.us",
+		"group_name": "Lisbon trip",
+		"sender_id": "14165551234@c.us",
+		"sender_name": "Priya",
+		"text": "@Fare hello",
+		"tagged": true,
+		"participants": [
+			{"id": "14165551234@c.us", "name": "Priya", "is_agent": false},
+			{"id": "1555@c.us", "name": "Fare", "is_agent": true}
+		]
+	}`)
+	var m IncomingMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Participants) != 2 {
+		t.Fatalf("participants=%+v", m.Participants)
+	}
+	if m.Participants[0].Name != "Priya" || m.Participants[1].IsAgent != true {
+		t.Fatalf("participants=%+v", m.Participants)
+	}
+}

@@ -22,7 +22,9 @@ Record every human participant's travel preferences as JSON.
 - general_preferences.culinary: a whitelist of food they want (not allergies/dealbreakers).
 - flight_preferences.is_direct / class (economy, economy_plus, business) if they said so.
 - accommodation_preferences.type (hotel, airbnb, hostel) / rating if they said so.
-- missing_info: things you'd need to ask to plan well (e.g. "Sam's home city").`, today)
+- missing_info: things you'd need to ask to plan well (e.g. "Sam's home city").
+- If a roster of WhatsApp group members is provided, use those exact display names
+  for whatsapp_name. Do not invent extra people, and skip the bot.`, today)
 }
 
 func ProposeSystem(botName, today, feedback string) string {
