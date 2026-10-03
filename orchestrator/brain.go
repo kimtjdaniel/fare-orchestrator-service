@@ -125,27 +125,17 @@ func looksLikeWhatsAppID(s string) bool {
 		strings.Contains(sl, "@lid") || strings.Contains(sl, "@s.whatsapp")
 }
 
-func displayFirstName(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" || looksLikeWhatsAppID(s) {
-		return ""
-	}
-	fields := strings.Fields(s)
-	if len(fields) == 0 {
-		return s
-	}
-	return fields[0]
-}
-
 var (
 	waJIDRe    = regexp.MustCompile(`@?[A-Za-z0-9._+-]+@(?:c\.us|g\.us|lid|s\.whatsapp\.net)`)
 	waAtNumRe  = regexp.MustCompile(`@\d{6,}`)
+	waAtNameRe = regexp.MustCompile(`@[A-Za-z][\w'-]*`)
 	waSpacesRe = regexp.MustCompile(`[^\S\n]{2,}`)
 )
 
 func scrubWhatsAppIDs(text string) string {
 	text = waJIDRe.ReplaceAllString(text, "")
 	text = waAtNumRe.ReplaceAllString(text, "")
+	text = waAtNameRe.ReplaceAllString(text, "")
 	return strings.TrimSpace(waSpacesRe.ReplaceAllString(text, " "))
 }
 
@@ -339,7 +329,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		return b.onReply(ctx, trip, m)
 	case models.Searching, models.BookingState:
 		if m.Tagged {
-			return b.say(ctx, m.GroupID, "Still looking that up. I'll post it here when it's ready.", nil)
+			return b.say(ctx, m.GroupID, "Still digging — I'll drop it here when I have it.", nil)
 		}
 	}
 	return nil
@@ -381,7 +371,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	}
 	people = snapNamesToRoster(people, incoming.Participants)
 	if len(people) == 0 {
-		return b.say(ctx, trip.GroupID, "I need a bit more. Where is everyone flying from, which dates work, and what's the budget?", nil)
+		return b.say(ctx, trip.GroupID, "Catch me up on where you'd fly out of and which dates could work.", nil)
 	}
 	for i := range people {
 		if people[i].PID == "" {
@@ -402,25 +392,26 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	// Can't search flights without an origin: ask now, re-plan on the next @mention. Also
 	// surface whatever else Gemini flagged as missing (budget, dates, ...) rather than silently
 	// proposing a plan built on guesses.
-	var noOrigin []string
+	var missingOrigin bool
 	for _, p := range people {
 		if p.OriginAirport == "" {
-		if n := displayFirstName(p.WhatsAppName); n != "" {
-			noOrigin = append(noOrigin, n)
-		}
+			missingOrigin = true
+			break
 		}
 	}
 	var missingInfo []string
 	if err := decodeInto(planned["missing_info"], &missingInfo); err != nil {
 		return err
 	}
-	if len(noOrigin) > 0 || len(missingInfo) > 0 {
-		var asks []string
-		if len(noOrigin) > 0 {
-			asks = append(asks, fmt.Sprintf("Where are %s flying from?", strings.Join(noOrigin, ", ")))
+	if missingOrigin || len(missingInfo) > 0 {
+		ask := "Where's everyone flying from?"
+		if !missingOrigin {
+			ask = strings.TrimSpace(missingInfo[0])
+			if ask == "" {
+				ask = "What dates actually work for the group?"
+			}
 		}
-		asks = append(asks, missingInfo...)
-		return b.say(ctx, trip.GroupID, strings.Join(asks, " ")+" Reply here and I'll use it.", nil)
+		return b.say(ctx, trip.GroupID, ask, nil)
 	}
 
 	var options []models.Option
@@ -512,8 +503,7 @@ func (b *Brain) propose(ctx context.Context, trip *models.Trip, people []models.
 		options = append(options, opt)
 	}
 	if len(options) == 0 {
-		return trip, "", nil, false, b.say(ctx, trip.GroupID, "I couldn't come up with a plan that fits everyone. "+
-			"Can you loosen the dates a little?", nil)
+		return trip, "", nil, false, b.say(ctx, trip.GroupID, "I'm not seeing overlap that works for everyone. Could the dates move a little?", nil)
 	}
 
 	violations := validateOptions(options, people)
@@ -621,7 +611,7 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		if err != nil {
 			return err
 		}
-		return b.say(ctx, trip.GroupID, formatting.OptionsMessage("No problem. Here are the options again:",
+		return b.say(ctx, trip.GroupID, formatting.OptionsMessage("No worries — here they are again.",
 			trip.Options, trip.ID, b.Config.DashboardURL), optionButtons(trip.Options))
 	case kind == "revise":
 		if trip.State == models.AwaitingApproval {
@@ -639,13 +629,13 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		if _, err := store.SetState(ctx, b.Store, trip.ID, models.Cancelled, nil); err != nil {
 			return err
 		}
-		return b.say(ctx, trip.GroupID, "Trip planning cancelled. Tag me when you want to start again.", nil)
+		return b.say(ctx, trip.GroupID, "Okay, dropping this trip. Ping me if you want to start over.", nil)
 	case kind == "question":
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "other" && m.Tagged:
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "approve" && trip.State == models.AwaitingChoice:
-		return b.say(ctx, trip.GroupID, "Pick an option first. Reply 1, 2, or 3.", nil)
+		return b.say(ctx, trip.GroupID, "Need a 1, 2, or 3 first.", nil)
 	}
 	return nil
 }
@@ -692,7 +682,7 @@ func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.
 		return err
 	}
 	answer, err := b.LLM.Agent(ctx, prompts.AgentSystem(b.Config.BotName, string(ctxBlob)),
-		[]llm.Message{{Role: "user", Content: fmt.Sprintf("%s: %s", m.SenderName, m.Text)}},
+		[]llm.Message{{Role: "user", Content: m.Text}},
 		tools.AgentTools, tools.AgentHandlers(b.Config))
 	if err != nil {
 		return err
@@ -714,7 +704,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		}
 	}
 	if option == nil {
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("I only have options 1–%d. Which one?", len(trip.Options)), nil)
+		return b.say(ctx, trip.GroupID, fmt.Sprintf("I only put up 1–%d. Which of those?", len(trip.Options)), nil)
 	}
 
 	fields := map[string]any{
@@ -735,7 +725,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	if err != nil {
 		return err
 	}
-	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("%s it is. Looking up flights and a hotel.", option.Destination), nil); err != nil {
+	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("%s it is. I'll look up flights and a place to stay.", option.Destination), nil); err != nil {
 		return err
 	}
 
@@ -750,8 +740,8 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		if _, sErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); sErr != nil {
 			return sErr
 		}
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("Couldn't find availability for %s (no flights %s->%s). Pick another option?",
-			option.Destination, originAirport, option.DestinationAirport), nil)
+		return b.say(ctx, trip.GroupID, fmt.Sprintf("No luck on flights to %s from %s. Want to try another option?",
+			option.Destination, originAirport), nil)
 	}
 	offer := offers[0]
 
@@ -760,7 +750,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		if _, sErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); sErr != nil {
 			return sErr
 		}
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("Couldn't find availability for %s (no hotels). Pick another option?", option.Destination), nil)
+		return b.say(ctx, trip.GroupID, fmt.Sprintf("Couldn't find a hotel that works in %s. Want another option?", option.Destination), nil)
 	}
 	hotel := hotels[0]
 
@@ -830,7 +820,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 		return fmt.Errorf("trip %s has no chosen option", trip.ID)
 	}
 	itin := trip.Itinerary
-	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("Approved by %s. Booking now.", approver), nil); err != nil {
+	if err := b.say(ctx, trip.GroupID, "On it — booking now.", nil); err != nil {
 		return err
 	}
 
@@ -903,7 +893,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 			if _, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingApproval, nil); err != nil {
 				return err
 			}
-			return b.say(ctx, trip.GroupID, "Flights are booked, but the hotel booking failed. Reply yes to retry the hotel.", nil)
+			return b.say(ctx, trip.GroupID, "Flights are in, but the hotel didn't go through. Say yes and I'll retry the hotel.", nil)
 		}
 
 		cost := hotel.TotalPrice
