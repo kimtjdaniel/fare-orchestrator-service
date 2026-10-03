@@ -92,7 +92,7 @@ func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen model
 	if err := b.sendPoll(ctx, trip.GroupID, "Book this one?", []string{"Yes, book it", "Show the other options"}, "approve", trip.ID); err != nil {
 		return err
 	}
-	return nil
+	return b.maybeAskPayer(ctx, trip, false)
 }
 
 func (b *Brain) pollOptions(ctx context.Context, trip *models.Trip, options []models.Option) error {
@@ -296,6 +296,9 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	}
 	if trip == nil {
 		return nil
+	}
+	if strings.Contains(strings.ToLower(vote.PollName), "paying") {
+		return b.applyPayerVote(ctx, trip, vote, selected)
 	}
 	if trip.PendingChange != nil || trip.LastPoll == "change" {
 		return b.handleChangeVote(ctx, trip, vote, selected)

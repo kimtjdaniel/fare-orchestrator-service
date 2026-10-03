@@ -84,7 +84,7 @@ var allowedTripFields = map[string]bool{
 	"origin": true, "destination": true, "destination_airport": true,
 	"activity_description": true, "culinary_description": true, "duration_nights": true,
 	"cost_per_person": true, "embarking_date": true, "returning_date": true,
-	"asked_origin": true, "asked_dates": true,
+	"asked_origin": true, "asked_dates": true, "asked_payer": true, "payer_name": true,
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 }
@@ -163,6 +163,10 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			trip.AskedOrigin, _ = v.(bool)
 		case "asked_dates":
 			trip.AskedDates, _ = v.(bool)
+		case "asked_payer":
+			trip.AskedPayer, _ = v.(bool)
+		case "payer_name":
+			trip.PayerName, _ = v.(string)
 		case "shared_dashboard":
 			trip.SharedDashboard, _ = v.(bool)
 		case "last_poll":

@@ -13,9 +13,25 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
+
+type replyToKey struct{}
+
+func WithReplyTo(ctx context.Context, messageID string) context.Context {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, replyToKey{}, messageID)
+}
+
+func ReplyTo(ctx context.Context) string {
+	id, _ := ctx.Value(replyToKey{}).(string)
+	return id
+}
 
 // Button is (label, payload). The payload comes back to /telegram/webhook as if the user typed it.
 type Button struct {
@@ -106,12 +122,15 @@ func NewRobotMessenger(robotURL, token string) *RobotMessenger {
 }
 
 func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons []Button) error {
-	// WhatsApp has no inline buttons. Do not append "1 reply 1" hints — they clutter the chat.
-	body, err := json.Marshal(map[string]string{
+	payload := map[string]any{
 		"group_id": groupID,
 		"chat_id":  groupID,
 		"text":     text,
-	})
+	}
+	if id := ReplyTo(ctx); id != "" {
+		payload["reply_to_message_id"] = id
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -135,7 +154,7 @@ func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons
 }
 
 func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
-	body, err := json.Marshal(map[string]any{
+	payload := map[string]any{
 		"group_id": groupID,
 		"chat_id":  groupID,
 		"poll": map[string]any{
@@ -143,7 +162,11 @@ func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll
 			"options":                poll.Options,
 			"allow_multiple_answers": poll.AllowMultipleAnswers,
 		},
-	})
+	}
+	if id := ReplyTo(ctx); id != "" {
+		payload["reply_to_message_id"] = id
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
@@ -179,6 +202,9 @@ func (m *RobotMessenger) SendMedia(ctx context.Context, groupID, caption string,
 	}
 	if strings.TrimSpace(caption) != "" {
 		payload["text"] = caption
+	}
+	if id := ReplyTo(ctx); id != "" {
+		payload["reply_to_message_id"] = id
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -216,6 +242,11 @@ func NewTelegramMessenger(botToken string) *TelegramMessenger {
 
 func (m *TelegramMessenger) Send(ctx context.Context, groupID, text string, buttons []Button) error {
 	body := map[string]any{"chat_id": groupID, "text": text}
+	if id := ReplyTo(ctx); id != "" {
+		if n, err := strconv.Atoi(id); err == nil {
+			body["reply_to_message_id"] = n
+		}
+	}
 	if len(buttons) > 0 {
 		row := make([]map[string]string, len(buttons))
 		for i, b := range buttons {

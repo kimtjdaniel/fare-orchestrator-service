@@ -65,6 +65,7 @@ type IncomingMessage struct {
 	MessageID    string        `json:"message_id,omitempty"`
 	AgentID      string        `json:"agent_id,omitempty"`
 	Quoted       *QuotedMessage `json:"quoted,omitempty"`
+	CoAskers     []string      `json:"-"` // other people in a batched @mention burst
 }
 
 // QuotedMessage is the WhatsApp message this inbound line is replying to.
@@ -280,6 +281,8 @@ type Trip struct {
 	HistoryStart *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
 	AskedOrigin      bool   `json:"asked_origin" bson:"asked_origin"`
 	AskedDates       bool   `json:"asked_dates" bson:"asked_dates"`
+	AskedPayer       bool   `json:"asked_payer" bson:"asked_payer"`
+	PayerName        string `json:"payer_name,omitempty" bson:"payer_name,omitempty"`
 	SharedDashboard  bool   `json:"shared_dashboard" bson:"shared_dashboard"`
 	LastPoll         string `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
 	Roster           []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`

@@ -45,9 +45,13 @@ var (
 	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|what (should|can|do) we do|where to eat|restaurant|neighbourhood|neighborhood|hidden gem|full \d+\s*-?\s*days?|advise|recommend)`)
 	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
 	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
-	cheaperAskRe   = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
+	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
+	iPayRe         = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
+)
 	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked)\b`)
 	flightAskRe    = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
+	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
+	iPayRe         = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
 )
 
 type Brain struct {
@@ -59,6 +63,13 @@ type Brain struct {
 	mentionRe *regexp.Regexp
 	locksMu   sync.Mutex
 	locks     map[string]*sync.Mutex
+	batchMu   sync.Mutex
+	batches   map[string]*taggedBatch
+}
+
+type taggedBatch struct {
+	msgs  []models.IncomingMessage
+	timer *time.Timer
 }
 
 func NewBrain(cfg *config.Settings, st store.Store, llmClient llm.LLM, messenger messaging.Messenger) *Brain {
@@ -69,6 +80,7 @@ func NewBrain(cfg *config.Settings, st store.Store, llmClient llm.LLM, messenger
 		Config:    cfg,
 		mentionRe: regexp.MustCompile(`(?i)@` + regexp.QuoteMeta(cfg.BotName) + `\b`),
 		locks:     map[string]*sync.Mutex{},
+		batches:   map[string]*taggedBatch{},
 	}
 }
 
@@ -201,6 +213,14 @@ func looksLikeFlightAsk(text string) bool {
 	return flightAskRe.MatchString(text)
 }
 
+func looksLikeWhoPays(text string) bool {
+	return whoPaysRe.MatchString(text)
+}
+
+func looksLikeIPay(text string) bool {
+	return iPayRe.MatchString(text)
+}
+
 func quotedText(m models.IncomingMessage) string {
 	if m.Quoted == nil {
 		return ""
@@ -301,9 +321,86 @@ func (b *Brain) lockFor(groupID string) *sync.Mutex {
 
 // Handle is the entry point for every incoming message: one message at a time per group.
 func (b *Brain) Handle(ctx context.Context, m models.IncomingMessage) {
+	if !m.Tagged && b.mentionRe.MatchString(m.Text) {
+		m.Tagged = true
+	}
+	if shouldBatchMention(m) {
+		b.enqueueTagged(ctx, m)
+		return
+	}
+	b.handleLocked(ctx, m)
+}
+
+func shouldBatchMention(m models.IncomingMessage) bool {
+	if !m.Tagged || strings.TrimSpace(m.Text) == "" {
+		return false
+	}
+	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
+		return false
+	}
+	return true
+}
+
+func (b *Brain) enqueueTagged(ctx context.Context, m models.IncomingMessage) {
+	const wait = 1500 * time.Millisecond
+	b.batchMu.Lock()
+	defer b.batchMu.Unlock()
+	batch := b.batches[m.GroupID]
+	if batch == nil {
+		batch = &taggedBatch{}
+		b.batches[m.GroupID] = batch
+	}
+	batch.msgs = append(batch.msgs, m)
+	if batch.timer != nil {
+		batch.timer.Stop()
+	}
+	groupID := m.GroupID
+	batch.timer = time.AfterFunc(wait, func() {
+		b.batchMu.Lock()
+		cur := b.batches[groupID]
+		var msgs []models.IncomingMessage
+		if cur != nil {
+			msgs = append([]models.IncomingMessage(nil), cur.msgs...)
+			delete(b.batches, groupID)
+		}
+		b.batchMu.Unlock()
+		if len(msgs) == 0 {
+			return
+		}
+		b.handleLocked(ctx, mergeTagged(msgs))
+	})
+}
+
+func mergeTagged(msgs []models.IncomingMessage) models.IncomingMessage {
+	out := msgs[len(msgs)-1]
+	if len(msgs) == 1 {
+		return out
+	}
+	seen := map[string]bool{}
+	var names []string
+	var lines []string
+	for _, msg := range msgs {
+		who := strings.TrimSpace(msg.SenderName)
+		if who == "" {
+			who = "Someone"
+		}
+		if !seen[strings.ToLower(who)] {
+			seen[strings.ToLower(who)] = true
+			names = append(names, who)
+		}
+		lines = append(lines, who+": "+strings.TrimSpace(msg.Text))
+	}
+	out.Text = strings.Join(lines, "\n")
+	out.Tagged = true
+	out.CoAskers = names
+	return out
+}
+
+func (b *Brain) handleLocked(ctx context.Context, m models.IncomingMessage) {
 	lock := b.lockFor(m.GroupID)
 	lock.Lock()
 	defer lock.Unlock()
+	ctx = messaging.WithReplyTo(ctx, m.MessageID)
 
 	if err := b.handle(ctx, m); err != nil {
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
@@ -356,6 +453,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	if trip != nil {
 		b.rememberRoster(ctx, trip, m)
+		trip, _ = b.capturePayer(ctx, trip, m)
 	}
 
 	if trip == nil {
@@ -377,11 +475,8 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if !m.Tagged {
 			return nil
 		}
-		if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
-			return b.postLockedStatus(ctx, trip)
-		}
-		if wantsHotelPhoto(trip, m) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) {
-			return b.sendHotelPhoto(ctx, trip)
+		if handled, err := b.replyToAsks(ctx, trip, m); handled || err != nil {
+			return err
 		}
 		if looksLikeCancelBooking(m.Text) || looksLikeReplan(m.Text) {
 			recent, _ := b.Store.GetMessages(ctx, m.GroupID, nil, 20, false)
@@ -427,14 +522,17 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	if looksLikeStuck(m.Text) && (m.Tagged || trip.State == models.AwaitingChoice || trip.State == models.AwaitingApproval) {
 		return b.helpDecide(ctx, trip, m)
 	}
-	if m.Tagged && (looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text)) {
-		return b.postLockedStatus(ctx, trip)
-	}
-	if m.Tagged && wantsHotelPhoto(trip, m) {
-		return b.sendHotelPhoto(ctx, trip)
-	}
-	if m.Tagged && looksLikeCheaperAsk(m.Text) && tripHasLockedFares(trip) {
-		return b.offerCheaperFlights(ctx, trip, m)
+	if m.Tagged {
+		handled, err := b.replyToAsks(ctx, trip, m)
+		if err != nil {
+			return err
+		}
+		if handled && looksLikeItineraryAsk(m.Text) {
+			return b.writeAdvisorItinerary(ctx, trip, m)
+		}
+		if handled {
+			return nil
+		}
 	}
 	if gated, err := b.maybeGateDetails(ctx, trip, m); gated || err != nil {
 		return err
@@ -798,14 +896,12 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 	case kind == "cheaper":
 		return b.offerCheaperFlights(ctx, trip, m)
 	case kind == "question":
-		if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
-			return b.postLockedStatus(ctx, trip)
+		handled, err := b.replyToAsks(ctx, trip, m)
+		if err != nil {
+			return err
 		}
-		if wantsHotelPhoto(trip, m) {
-			return b.sendHotelPhoto(ctx, trip)
-		}
-		if looksLikeCheaperAsk(m.Text) {
-			return b.offerCheaperFlights(ctx, trip, m)
+		if handled && !looksLikeItineraryAsk(m.Text) {
+			return nil
 		}
 		if looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
@@ -936,6 +1032,35 @@ func (b *Brain) postLockedStatus(ctx context.Context, trip *models.Trip) error {
 		text = "Nothing is locked yet — I still need a destination and a fare search."
 	}
 	return b.say(ctx, trip.GroupID, text, nil)
+}
+
+func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
+	did := false
+	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+		if err := b.postLockedStatus(ctx, trip); err != nil {
+			return true, err
+		}
+		did = true
+	}
+	if wantsHotelPhoto(trip, m) && !looksLikeCancelBooking(m.Text) {
+		if err := b.sendHotelPhoto(ctx, trip); err != nil {
+			return true, err
+		}
+		did = true
+	}
+	if looksLikeWhoPays(m.Text) {
+		if err := b.maybeAskPayer(ctx, trip, true); err != nil {
+			return true, err
+		}
+		did = true
+	}
+	if looksLikeCheaperAsk(m.Text) && tripHasLockedFares(trip) && !looksLikeItineraryAsk(m.Text) {
+		if err := b.offerCheaperFlights(ctx, trip, m); err != nil {
+			return true, err
+		}
+		did = true
+	}
+	return did, nil
 }
 
 func tripDestination(trip *models.Trip) string {
@@ -1381,10 +1506,13 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 		return err
 	}
 
-	payer := approver
-	if match := matchName(approver, people); match != nil {
+	payer := strings.TrimSpace(trip.PayerName)
+	if payer == "" {
+		payer = approver
+	}
+	if match := matchName(payer, people); match != nil {
 		payer = match.WhatsAppName
-	} else if len(people) > 0 {
+	} else if len(people) > 0 && payer == "" {
 		payer = people[0].WhatsAppName
 	}
 	names := make([]string, len(people))
