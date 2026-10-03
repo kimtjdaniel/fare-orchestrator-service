@@ -35,6 +35,7 @@ Record every human participant's travel preferences as JSON.
 - missing_info: the smallest set of questions still needed.
 - If a roster is provided, use those exact display names for whatsapp_name (first + last is fine). Skip the bot. Do not invent people.
 - Never store WhatsApp IDs, phone numbers, or @c.us/@g.us/@lid as names.
+- Never record payment details, passport numbers, or other secrets. Those live in 1Password; only uploaded_payment_info / uploaded_passport_info booleans belong in JSON.
 - No emojis.`, today)
 }
 
@@ -72,6 +73,7 @@ Attribution: people often speak for others. Put facts on the person they are abo
 - "he's flying from YVR" / "Tom's out of Vancouver" -> Tom's origin_airport YVR.
 - "we all leave from YVR" -> every participant.
 whatsapp_name: roster display names for the JSON only. Skip the bot. Never invent people.
+If "already stored" preferences are provided, keep them. Only change a field when the chat clearly updates it. Do not put known origins or dates into missing_info.
 intro / missing_info / why_it_works / tradeoffs: spoken to the whole group. No names. No @tags. No IDs.
 Negative dates: if someone is not free on a date, omit it from their availability.`, botName, today, ChatVoice)
 }

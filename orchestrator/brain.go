@@ -293,6 +293,13 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		return nil // duplicate delivery (webhook retry)
 	}
 
+	if m.SenderID != "" || m.AgentID != "" {
+		_, _ = b.Store.SaveWhatsAppSession(ctx, "robot", map[string]any{
+			"last_group_id": m.GroupID,
+			"agent_id":      m.AgentID,
+		})
+	}
+
 	if trip == nil {
 		if m.Tagged {
 			trip, err = b.Store.CreateTrip(ctx, m.GroupID, m.GroupName)
@@ -353,6 +360,9 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	if roster := formatGroupRoster(incoming.Participants); roster != "" {
 		userContent += "People actually in this WhatsApp group (use these exact names for whatsapp_name; skip the bot):\n" + roster + "\n\n"
 	}
+	if known := formatKnownPrefs(trip.Participants); known != "" {
+		userContent += "Already stored from earlier in this trip (keep these; only update what the new chat actually changes; do not re-ask for fields that are filled):\n" + known + "\n\n"
+	}
 	userContent += "Group chat:\n" + transcript
 	if feedback != "" {
 		userContent += "\n\nLatest update from the group (may be one person speaking for another):\n" + feedback
@@ -370,6 +380,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		return err
 	}
 	people = snapNamesToRoster(people, incoming.Participants)
+	people = mergeParticipants(trip.Participants, people)
 	if len(people) == 0 {
 		return b.say(ctx, trip.GroupID, "Catch me up on where you'd fly out of and which dates could work.", nil)
 	}
@@ -379,8 +390,10 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		}
 	}
 	fields := map[string]any{"participants": people}
-	if origin := people[0].OriginCity; origin != "" {
+	if origin := people[0].Origin; origin != "" {
 		fields["origin"] = origin
+	} else if people[0].OriginCity != "" {
+		fields["origin"] = people[0].OriginCity
 	} else if people[0].OriginAirport != "" {
 		fields["origin"] = people[0].OriginAirport
 	}
@@ -389,27 +402,18 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		return err
 	}
 
-	// Can't search flights without an origin: ask now, re-plan on the next @mention. Also
-	// surface whatever else Gemini flagged as missing (budget, dates, ...) rather than silently
-	// proposing a plan built on guesses.
-	var missingOrigin bool
-	for _, p := range people {
-		if p.OriginAirport == "" {
-			missingOrigin = true
-			break
-		}
-	}
+	missingOrigin := !hasSharedOrigin(people)
 	var missingInfo []string
 	if err := decodeInto(planned["missing_info"], &missingInfo); err != nil {
 		return err
 	}
-	if missingOrigin || len(missingInfo) > 0 {
-		ask := "Where's everyone flying from?"
-		if !missingOrigin {
+	if missingOrigin {
+		return b.say(ctx, trip.GroupID, "Where's everyone flying from?", nil)
+	}
+	if !hasAnyDates(people) {
+		ask := "What dates actually work for the group?"
+		if len(missingInfo) > 0 && strings.TrimSpace(missingInfo[0]) != "" {
 			ask = strings.TrimSpace(missingInfo[0])
-			if ask == "" {
-				ask = "What dates actually work for the group?"
-			}
 		}
 		return b.say(ctx, trip.GroupID, ask, nil)
 	}

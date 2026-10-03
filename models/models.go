@@ -63,6 +63,7 @@ type IncomingMessage struct {
 	Tagged       bool          `json:"tagged"`    // was the bot @mentioned?
 	Timestamp    int64         `json:"timestamp"` // unix seconds
 	MessageID    string        `json:"message_id,omitempty"`
+	AgentID      string        `json:"agent_id,omitempty"`
 }
 
 // GroupMember is one WhatsApp group participant as reported by the robot.
@@ -177,7 +178,8 @@ type Participant struct {
 	UploadedPaymentInfo  bool   `json:"uploaded_payment_info" bson:"uploaded_payment_info"`
 	UploadedPassportInfo bool   `json:"uploaded_passport_info" bson:"uploaded_passport_info"`
 	OriginCity           string `json:"origin_city,omitempty" bson:"origin_city,omitempty"`
-	OriginAirport        string `json:"origin_airport,omitempty" bson:"origin_airport,omitempty"` // IATA; tbd, same origin for now
+	OriginAirport        string `json:"origin_airport,omitempty" bson:"origin_airport,omitempty"` // IATA
+	Origin               string `json:"origin,omitempty" bson:"origin,omitempty"`                 // schema: same origin for now; city or IATA
 
 	GeneralPreferences       GeneralPreferences       `json:"general_preferences" bson:"general_preferences"`
 	FlightPreferences        FlightPreferences        `json:"flight_preferences" bson:"flight_preferences"`

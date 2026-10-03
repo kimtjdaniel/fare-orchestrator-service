@@ -43,6 +43,14 @@ func main() {
 	}
 	defer st.Close(ctx)
 
+	if _, err := st.SaveWhatsAppSession(ctx, "robot", map[string]any{
+		"status":    "brain_up",
+		"messaging": cfg.MessagingBackend,
+	}); err != nil {
+		slog.Error("whatsapp session upsert failed", "err", err)
+		os.Exit(1)
+	}
+
 	var llmClient llm.LLM
 	switch {
 	case cfg.MockLLM:
@@ -65,6 +73,8 @@ func main() {
 	storeKind := "memory"
 	if cfg.MongoURI != "" {
 		storeKind = "mongo"
+	} else {
+		slog.Warn("MONGODB_URI is empty — trip memory is in-process only and will be forgotten on restart")
 	}
 	llmKind := cfg.GeminiModel
 	switch {
@@ -90,6 +100,8 @@ func main() {
 	mux.HandleFunc("POST /telegram/webhook", telegramWebhookHandler(cfg, brain))
 	mux.HandleFunc("GET /trips/{id}", getTripHandler(st))
 	mux.HandleFunc("GET /groups/{gid}/trip", getGroupTripHandler(st))
+	mux.HandleFunc("PUT /sessions/whatsapp", putWhatsAppSessionHandler(st))
+	mux.HandleFunc("GET /sessions/whatsapp", getWhatsAppSessionHandler(st))
 
 	addr := ":" + getenv("PORT", "8000")
 	slog.Info("listening", "addr", addr)
@@ -135,6 +147,37 @@ func healthHandler(cfg *config.Settings) http.HandlerFunc {
 			"ok": true, "mock_llm": cfg.MockLLM, "mock_travel": cfg.MockTravel,
 			"mock_browser": cfg.MockBrowser, "messaging": cfg.MessagingBackend, "store": storeKind,
 		})
+	}
+}
+
+func putWhatsAppSessionHandler(st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		sess, err := st.SaveWhatsAppSession(r.Context(), "robot", body)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, sess)
+	}
+}
+
+func getWhatsAppSessionHandler(st store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sess, err := st.GetWhatsAppSession(r.Context(), "robot")
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if sess == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "no session"})
+			return
+		}
+		writeJSON(w, http.StatusOK, sess)
 	}
 }
 

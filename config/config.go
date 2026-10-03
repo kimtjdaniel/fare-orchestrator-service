@@ -3,7 +3,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -94,8 +96,13 @@ func floatEnv(name string, def float64) float64 {
 
 // Load reads .env (if present) and returns the resolved Settings.
 func Load() *Settings {
-	// Overload so a local .env wins over an empty SERVICE_TOKEN inherited from the shell.
-	_ = godotenv.Overload()
+	cwd, _ := os.Getwd()
+	envPath := filepath.Join(cwd, ".env")
+	if _, err := os.Stat(envPath); err == nil {
+		if err := godotenv.Overload(envPath); err != nil {
+			fmt.Fprintf(os.Stderr, "config: %s: %v\n", envPath, err)
+		}
+	}
 	return &Settings{
 		MockLLM:                 boolEnv("MOCK_LLM", true),
 		MockTravel:              boolEnv("MOCK_TRAVEL", true),
@@ -106,7 +113,7 @@ func Load() *Settings {
 		GeminiModel:  getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
 		LLMCacheDir:  getenv("LLM_CACHE_DIR", ""),
 
-		MongoURI: getenv("MONGODB_URI", ""),
+		MongoURI: firstNonEmpty(getenv("MONGODB_URI", ""), getenv("MONGO_URI", ""), getenv("MONGODB_URL", "")),
 		MongoDB:  getenv("MONGODB_DB", "fare"),
 
 		MessagingBackend:      getenv("MESSAGING_BACKEND", "console"),

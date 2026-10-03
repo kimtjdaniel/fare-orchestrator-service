@@ -51,6 +51,12 @@ func (s *MongoStore) Connect(ctx context.Context) error {
 				bson.D{{Key: "external_id", Value: bson.D{{Key: "$exists", Value: true}}}}),
 		},
 	})
+	if err != nil {
+		return err
+	}
+	_, err = s.trips.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "group_id", Value: 1}},
+	})
 	return err
 }
 
