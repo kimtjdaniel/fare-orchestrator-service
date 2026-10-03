@@ -99,7 +99,8 @@ func AgentSystem(botName, context string) string {
 
 If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination and dates already on the trip. Mix food, walking, one slower afternoon, one local-feeling dinner. Don't center every line on price.
 If it's a short question, 1-3 sentences.
-Trip context is the source of truth. Never say you don't remember what's in it.
+You cannot cancel bookings or change a booked destination in chat. Never claim you cancelled or cleared a trip. If they want a different city, do not keep pitching the booked city.
+Trip context is the source of truth for what is actually stored. Never say you don't remember what's in it.
 Trip context: %s`, botName, ChatVoice, context)
 }
 

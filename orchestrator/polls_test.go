@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -49,5 +50,26 @@ func TestLooksLikeHotelAsk(t *testing.T) {
 	}
 	if looksLikeHotelAsk("what should we eat") {
 		t.Fatal("did not expect hotel ask")
+	}
+}
+
+func TestReplanItalyApril(t *testing.T) {
+	today := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	if parseDestination("plan italy southern next April instead") != "Southern Italy" {
+		t.Fatal(parseDestination("plan italy southern next April instead"))
+	}
+	h := harvestText("Help us plan southern italy now", today)
+	if h.Destination != "Southern Italy" {
+		t.Fatalf("dest %q", h.Destination)
+	}
+	h = harvestText("next April instead", today)
+	if len(h.Dates) == 0 || !strings.HasPrefix(h.Dates[0], "2027-04") {
+		t.Fatalf("april dates %v", h.Dates)
+	}
+	if !looksLikeCancelBooking("Yea cancel all tel aviv") {
+		t.Fatal("expected cancel")
+	}
+	if !looksLikeReplan("change if plan, plan italy southern next April instead") {
+		t.Fatal("expected replan")
 	}
 }

@@ -20,6 +20,7 @@ var (
 	destToRe  = regexp.MustCompile(`(?i)\b(?:destination(?:\s+to)?|going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
 	insteadToRe = regexp.MustCompile(`(?i)\b(?:to|for)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+instead\b`)
 	budgetRe  = regexp.MustCompile(`(?i)(?:c\$|cad\s*\$?|\$)\s*([\d,]+)|budget[^\d]{0,12}([\d,]+)`)
+	monthOnlyRe = regexp.MustCompile(`(?i)\b(?:next\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`)
 )
 
 var monthNum = map[string]time.Month{
@@ -112,6 +113,9 @@ func harvestText(text string, today time.Time) harvestedFacts {
 		}
 	}
 	h.Dates = fillDateRange(h.Dates)
+	if len(h.Dates) == 0 {
+		h.Dates = monthOnlyDates(text, today)
+	}
 	if dest := parseDestination(text); dest != "" {
 		h.Destination = dest
 	}
@@ -254,6 +258,13 @@ func fillDateRange(dates []string) []string {
 }
 
 func parseDestination(text string) string {
+	low := strings.ToLower(text)
+	if strings.Contains(low, "italy") || strings.Contains(low, "italia") {
+		if strings.Contains(low, "south") {
+			return "Southern Italy"
+		}
+		return "Italy"
+	}
 	if m := destToRe.FindStringSubmatch(text); len(m) == 2 {
 		if dest := cleanPlaceName(m[1]); dest != "" {
 			return dest
@@ -265,6 +276,24 @@ func parseDestination(text string) string {
 		}
 	}
 	return ""
+}
+
+func monthOnlyDates(text string, today time.Time) []string {
+	low := strings.ToLower(text)
+	m := monthOnlyRe.FindStringSubmatch(text)
+	if len(m) < 2 {
+		return nil
+	}
+	mon := monthNum[strings.ToLower(m[1])]
+	if mon == 0 {
+		return nil
+	}
+	year := today.Year()
+	if today.Month() > mon || strings.Contains(low, "next") {
+		year++
+	}
+	start := time.Date(year, mon, 1, 0, 0, 0, 0, time.UTC)
+	return dateList(start, start.AddDate(0, 0, 9))
 }
 
 func parseBudget(text string) string {

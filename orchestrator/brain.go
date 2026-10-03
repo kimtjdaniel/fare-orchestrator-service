@@ -332,13 +332,37 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	}
 
 	if trip.State == models.Booked {
-		if m.Tagged && looksLikeHotelAsk(m.Text) {
+		if !m.Tagged {
+			return nil
+		}
+		if looksLikeHotelAsk(m.Text) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) {
 			return b.sendHotelPhoto(ctx, trip)
 		}
-		if m.Tagged {
-			return b.answerQuestion(ctx, trip, m)
+		if looksLikeCancelBooking(m.Text) || looksLikeReplan(m.Text) {
+			recent, _ := b.Store.GetMessages(ctx, m.GroupID, nil, 20, false)
+			alreadyCancel := looksLikeCancelBooking(m.Text)
+			for _, msg := range recent {
+				if looksLikeCancelBooking(msg.Text) {
+					alreadyCancel = true
+					break
+				}
+			}
+			h := harvestText(m.Text, b.today())
+			if alreadyCancel || h.Destination == "" {
+				return b.reopenAndPlan(ctx, trip, m)
+			}
+			old := trip.Destination
+			if old == "" {
+				old = "the current trip"
+			}
+			return b.startChangePoll(ctx, trip, m, &models.PendingChange{
+				Kind:        "reopen",
+				Summary:     fmt.Sprintf("Cancel %s and plan %s instead?", old, h.Destination),
+				Destination: h.Destination,
+				Dates:       h.Dates,
+			})
 		}
-		return nil
+		return b.answerQuestion(ctx, trip, m)
 	}
 	if trip.State == models.Cancelled {
 		if m.Tagged || looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
@@ -393,7 +417,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 // ------------------------------------------------------------------ stage: plan
 
 func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
-	history, err := b.Store.GetMessages(ctx, trip.GroupID, nil, 1000, true)
+	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 1000, true)
 	if err != nil {
 		return err
 	}
@@ -416,7 +440,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	if hasAnyDates(trip.Participants) || len(harvested.Dates) > 0 {
 		userContent += "Known dates (already given — do not ask again): " + strings.Join(unionDates(allStoredDates(trip.Participants), harvested.Dates), ", ") + "\n"
 	}
-	userContent += "missing_info MUST be empty for origin or dates if they are known above or appear in the chat.\n\n"
+	userContent += "If the latest update says a previous booking is cancelled, ignore that old destination completely. Do not mention it except to acknowledge it's off.\n\n"
 	if roster := formatGroupRoster(incoming.Participants); roster != "" {
 		userContent += "People actually in this WhatsApp group (use these exact names for whatsapp_name; skip the bot):\n" + roster + "\n\n"
 	}

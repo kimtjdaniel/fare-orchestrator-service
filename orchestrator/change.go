@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"fare-brain/formatting"
 	"fare-brain/models"
+	"fare-brain/store"
 )
 
 func destIsSet(trip *models.Trip) bool {
@@ -267,6 +269,13 @@ func (b *Brain) applyPendingChange(ctx context.Context, trip *models.Trip, vote 
 	fields := map[string]any{"pending_change": (*models.PendingChange)(nil)}
 	feedback := pc.Summary
 	switch pc.Kind {
+	case "reopen":
+		incoming.Text = strings.TrimSpace(pc.Destination + " " + pc.Summary)
+		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"pending_change": (*models.PendingChange)(nil)}); err != nil {
+			return err
+		}
+		trip.PendingChange = nil
+		return b.reopenAndPlan(ctx, trip, incoming)
 	case "dates":
 		people := applyHarvestForced(trip.Participants, harvestedFacts{Dates: pc.Dates}, trip.Roster)
 		fields["participants"] = people
@@ -313,4 +322,92 @@ func (b *Brain) applyPendingChange(ctx context.Context, trip *models.Trip, vote 
 		return err
 	}
 	return b.plan(ctx, updated, feedback, incoming)
+}
+
+func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	oldDest := trip.Destination
+	cut := b.replanCutover(ctx, trip.GroupID, m)
+	recent, _ := b.Store.GetMessages(ctx, trip.GroupID, &cut, 50, false)
+	h := harvestFacts(recent, b.today())
+	h = mergeHarvest(h, harvestText(m.Text, b.today()))
+
+	clear := map[string]any{
+		"destination":             "",
+		"destination_airport":     "",
+		"options":                 []models.Option{},
+		"itinerary":               map[string]any{},
+		"flights":                 []models.Flight{},
+		"accommodations":          []models.Accommodation{},
+		"chosen_option_position":  0,
+		"embarking_date":          "",
+		"returning_date":          "",
+		"approved_by":             "",
+		"pending_change":          (*models.PendingChange)(nil),
+		"history_start":           cut,
+		"asked_dates":             false,
+		"asked_origin":            false,
+	}
+	if h.Destination != "" {
+		clear["destination"] = h.Destination
+	}
+	people := trip.Participants
+	if len(h.Dates) > 0 {
+		people = applyHarvestForced(people, harvestedFacts{Dates: h.Dates, Nights: h.Nights}, trip.Roster)
+		clear["participants"] = people
+		clear["embarking_date"] = h.Dates[0]
+		clear["returning_date"] = h.Dates[len(h.Dates)-1]
+	}
+	var err error
+	switch trip.State {
+	case models.Booked, models.Cancelled:
+		trip, err = store.SetState(ctx, b.Store, trip.ID, models.Collecting, clear)
+	default:
+		trip, err = b.Store.UpdateTrip(ctx, trip.ID, clear)
+	}
+	if err != nil {
+		return err
+	}
+
+	ack := "Okay, that booking's off."
+	if oldDest != "" && h.Destination != "" {
+		ack = fmt.Sprintf("Got it — %s is cancelled. Looking at %s.", oldDest, h.Destination)
+	} else if h.Destination != "" {
+		ack = "Got it. Looking at " + h.Destination + "."
+	}
+	if err := b.say(ctx, trip.GroupID, ack, nil); err != nil {
+		return err
+	}
+	feedback := "The previous booking is cancelled and must not be reused. Plan this new trip from the latest request: " + m.Text
+	if h.Destination != "" {
+		feedback += " Destination is " + h.Destination + "."
+	}
+	if len(h.Dates) > 0 {
+		feedback += " Dates: " + strings.Join(h.Dates, ", ") + "."
+	}
+	return b.plan(ctx, trip, feedback, m)
+}
+
+func (b *Brain) replanCutover(ctx context.Context, groupID string, m models.IncomingMessage) time.Time {
+	fallback := models.Now().Add(-2 * time.Second)
+	if m.Timestamp != 0 {
+		fallback = time.Unix(m.Timestamp, 0).UTC().Add(-2 * time.Second)
+	}
+	msgs, err := b.Store.GetMessages(ctx, groupID, nil, 40, false)
+	if err != nil {
+		return fallback
+	}
+	var first time.Time
+	found := false
+	for _, msg := range msgs {
+		if looksLikeReplan(msg.Text) || looksLikeCancelBooking(msg.Text) {
+			if !found || msg.SentAt.Before(first) {
+				first = msg.SentAt
+				found = true
+			}
+		}
+	}
+	if found {
+		return first.Add(-time.Second)
+	}
+	return fallback
 }
