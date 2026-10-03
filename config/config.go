@@ -18,6 +18,8 @@ type Settings struct {
 
 	AnthropicAPIKey string
 	AnthropicModel  string
+	GeminiAPIKey    string
+	GeminiModel     string
 	LLMCacheDir     string
 
 	MongoURI string
@@ -93,6 +95,8 @@ func Load() *Settings {
 
 		AnthropicAPIKey: getenv("ANTHROPIC_API_KEY", ""),
 		AnthropicModel:  getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"),
+		GeminiAPIKey:    getenv("GEMINI_API_KEY", ""),
+		GeminiModel:     getenv("GEMINI_MODEL", "gemini-2.5-flash"),
 		LLMCacheDir:     getenv("LLM_CACHE_DIR", ".llm_cache"),
 
 		MongoURI: getenv("MONGODB_URI", ""),

@@ -44,9 +44,12 @@ func main() {
 	defer st.Close(ctx)
 
 	var llmClient llm.LLM
-	if cfg.MockLLM {
+	switch {
+	case cfg.MockLLM:
 		llmClient = &llm.MockLLM{}
-	} else {
+	case cfg.GeminiAPIKey != "":
+		llmClient = llm.NewGeminiLLM(cfg.GeminiAPIKey, cfg.GeminiModel, cfg.LLMCacheDir)
+	default:
 		llmClient = llm.NewClaudeLLM(cfg.AnthropicAPIKey, cfg.AnthropicModel, cfg.LLMCacheDir)
 	}
 
@@ -63,8 +66,11 @@ func main() {
 		storeKind = "mongo"
 	}
 	llmKind := cfg.AnthropicModel
-	if cfg.MockLLM {
+	switch {
+	case cfg.MockLLM:
 		llmKind = "mock"
+	case cfg.GeminiAPIKey != "":
+		llmKind = cfg.GeminiModel
 	}
 	travelKind := "real"
 	if cfg.MockTravel {
