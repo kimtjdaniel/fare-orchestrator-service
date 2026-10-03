@@ -78,13 +78,7 @@ func NewRobotMessenger(robotURL, token string) *RobotMessenger {
 }
 
 func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons []Button) error {
-	if len(buttons) > 0 {
-		hints := make([]string, len(buttons))
-		for i, b := range buttons {
-			hints[i] = fmt.Sprintf("%s reply %s", b.Label, b.Payload)
-		}
-		text += "\n\n" + joinStrings(hints, "  ")
-	}
+	// WhatsApp has no inline buttons. Do not append "1 reply 1" hints — they clutter the chat.
 	body, err := json.Marshal(map[string]string{
 		"group_id": groupID,
 		"chat_id":  groupID,

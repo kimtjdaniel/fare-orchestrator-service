@@ -1,5 +1,5 @@
 // Package formatting builds chat message templates. Built by code (not Gemini) so they're
-// instant, cheap, and never malformed. Polish the wording here during rehearsal.
+// instant, cheap, and never malformed.
 package formatting
 
 import (
@@ -9,8 +9,6 @@ import (
 	"fare-brain/models"
 	"fare-brain/tools"
 )
-
-var numberEmoji = map[int]string{1: "1️⃣", 2: "2️⃣", 3: "3️⃣"}
 
 func Money(x *float64) string {
 	if x == nil {
@@ -38,11 +36,11 @@ func commas(x float64) string {
 func Dates(startStr, endStr string) string {
 	start, err := models.ParseDate(startStr)
 	if err != nil {
-		return startStr + "–" + endStr
+		return startStr + " – " + endStr
 	}
 	end, err := models.ParseDate(endStr)
 	if err != nil {
-		return startStr + "–" + endStr
+		return startStr + " – " + endStr
 	}
 	if start.Month() == end.Month() {
 		return fmt.Sprintf("%s %d–%d", start.Format("Jan"), start.Day(), end.Day())
@@ -55,43 +53,43 @@ func DashboardLink(dashboardURL, tripID string) string {
 }
 
 func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL string) string {
+	intro = strings.TrimSpace(intro)
+	if intro == "" {
+		intro = "Here are a few options that fit:"
+	}
 	lines := []string{intro, ""}
 	for _, o := range options {
-		num := numberEmoji[o.Position]
-		if num == "" {
-			num = fmt.Sprintf("%d", o.Position)
+		lines = append(lines, fmt.Sprintf("%d. %s — %s — about %s each",
+			o.Position, o.Destination, Dates(o.EmbarkingDate, o.ReturningDate), Money(o.CostPerPerson)))
+		why := strings.TrimSpace(o.WhyItWorks)
+		if why != "" {
+			lines = append(lines, "   "+why)
 		}
-		lines = append(lines, fmt.Sprintf("%s %s, %s · ~%s/person", num, o.Destination,
-			Dates(o.EmbarkingDate, o.ReturningDate), Money(o.CostPerPerson)))
-		lines = append(lines, fmt.Sprintf("   ✔ %s", o.WhyItWorks))
-		lines = append(lines, fmt.Sprintf("   ⚖ %s", o.Tradeoffs))
+		if trade := strings.TrimSpace(o.Tradeoffs); trade != "" {
+			lines = append(lines, "   Tradeoff: "+trade)
+		}
 		lines = append(lines, "")
 	}
-	lines = append(lines, fmt.Sprintf("Reply with a number to pick one. Live plan: %s", DashboardLink(dashboardURL, tripID)))
+	lines = append(lines, "Reply 1, 2, or 3 to pick one.")
+	if dashboardURL != "" {
+		lines = append(lines, "Details: "+DashboardLink(dashboardURL, tripID))
+	}
 	return strings.Join(lines, "\n")
 }
 
-// SummaryMessage expects itinerary shaped like:
-//
-//	{
-//	  "hotel": {"name": string, "total_price": float64},
-//	  "flights": {"embarking": {...FlightOffer}, "returning": {...FlightOffer}},
-//	  "per_person": {personName: float64},
-//	  "group_total": float64,
-//	}
 func SummaryMessage(option models.Option, itinerary map[string]any, people []models.Participant, tripID, dashboardURL string) string {
 	hotel, _ := itinerary["hotel"].(map[string]any)
-	lines := []string{fmt.Sprintf("Here's the plan for %s, %s ✈️", option.Destination,
+	lines := []string{fmt.Sprintf("Plan for %s, %s", option.Destination,
 		Dates(option.EmbarkingDate, option.ReturningDate)), ""}
 
 	if flights, ok := itinerary["flights"].(map[string]any); ok {
 		if out, ok := flights["embarking"].(map[string]any); ok {
 			price := toFloatPtr(out["price"])
-			lines = append(lines, fmt.Sprintf("• Out: %v→%v on %v, %s", out["origin"], out["destination"], out["airline"], Money(price)))
+			lines = append(lines, fmt.Sprintf("Out: %v to %v on %v, %s", out["origin"], out["destination"], out["airline"], Money(price)))
 		}
 		if ret, ok := flights["returning"].(map[string]any); ok {
 			price := toFloatPtr(ret["price"])
-			lines = append(lines, fmt.Sprintf("• Back: %v→%v on %v, %s", ret["origin"], ret["destination"], ret["airline"], Money(price)))
+			lines = append(lines, fmt.Sprintf("Back: %v to %v on %v, %s", ret["origin"], ret["destination"], ret["airline"], Money(price)))
 		}
 	}
 
@@ -102,7 +100,7 @@ func SummaryMessage(option models.Option, itinerary map[string]any, people []mod
 		hotelName = hotel["name"]
 		hotelTotal = toFloatPtr(hotel["total_price"])
 	}
-	lines = append(lines, fmt.Sprintf("• Hotel: %v, %d nights, %s total", hotelName, nights, Money(hotelTotal)))
+	lines = append(lines, fmt.Sprintf("Hotel: %v, %d nights, %s total", hotelName, nights, Money(hotelTotal)))
 	lines = append(lines, "")
 
 	if perPerson, ok := itinerary["per_person"].(map[string]any); ok {
@@ -113,21 +111,24 @@ func SummaryMessage(option models.Option, itinerary map[string]any, people []mod
 	}
 	lines = append(lines, fmt.Sprintf("Group total: %s", Money(toFloatPtr(itinerary["group_total"]))))
 	lines = append(lines, "")
-	lines = append(lines, fmt.Sprintf("Reply ✅ to book or ❌ to go back to the options. Details: %s", DashboardLink(dashboardURL, tripID)))
+	lines = append(lines, "Reply yes to book, or no to go back to the options.")
+	if dashboardURL != "" {
+		lines = append(lines, "Details: "+DashboardLink(dashboardURL, tripID))
+	}
 	return strings.Join(lines, "\n")
 }
 
 func ConfirmationMessage(destination, embarkingPNR, returningPNR, hotelRef string, split tools.Split) string {
-	lines := []string{fmt.Sprintf("🎉 Booked! You're going to %s.", destination), ""}
-	lines = append(lines, fmt.Sprintf("✈️ Outbound flight ref: %s", embarkingPNR))
-	lines = append(lines, fmt.Sprintf("✈️ Return flight ref: %s", returningPNR))
-	lines = append(lines, fmt.Sprintf("🏨 Hotel confirmation: %s", hotelRef))
-	lines = append(lines, "")
+	lines := []string{fmt.Sprintf("Booked. You're going to %s.", destination), ""}
+	lines = append(lines, fmt.Sprintf("Outbound: %s", embarkingPNR))
+	lines = append(lines, fmt.Sprintf("Return: %s", returningPNR))
+	lines = append(lines, fmt.Sprintf("Hotel: %s", hotelRef))
 	if len(split.Owes) > 0 {
-		lines = append(lines, "💸 Settling up:")
+		lines = append(lines, "")
+		lines = append(lines, "Who owes whom:")
 		for _, o := range split.Owes {
 			amount := o.Amount
-			lines = append(lines, fmt.Sprintf("   %s → %s: %s", o.From, o.To, Money(&amount)))
+			lines = append(lines, fmt.Sprintf("  %s -> %s: %s", o.From, o.To, Money(&amount)))
 		}
 	}
 	lines = append(lines, "")

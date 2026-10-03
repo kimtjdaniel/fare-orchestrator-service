@@ -33,7 +33,27 @@ func NewGeminiLLM(apiKey, model, cacheDir string) *GeminiLLM {
 	if cacheDir != "" {
 		_ = os.MkdirAll(cacheDir, 0o755)
 	}
-	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 60 * time.Second}}
+	if model == "" {
+		model = "gemini-3.1-flash-lite"
+	}
+	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 90 * time.Second}}
+}
+
+func (g *GeminiLLM) modelsToTry() []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(m string) {
+		m = strings.TrimSpace(m)
+		if m == "" || seen[m] {
+			return
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	add(g.Model)
+	add("gemini-3.1-flash-lite")
+	add("gemini-3.5-flash-lite")
+	return out
 }
 
 type geminiPart struct {
@@ -107,40 +127,63 @@ func (g *GeminiLLM) generate(ctx context.Context, body map[string]any) (*geminiR
 		}
 	}
 
-	endpoint := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, g.Model, url.QueryEscape(g.APIKey))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("content-type", "application/json")
-
 	t0 := time.Now()
-	httpResp, err := g.HTTPClient.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer httpResp.Body.Close()
-	raw, err := io.ReadAll(httpResp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if httpResp.StatusCode >= 400 {
-		var apiErr geminiError
-		_ = json.Unmarshal(raw, &apiErr)
-		return nil, fmt.Errorf("gemini api %d: %s", httpResp.StatusCode, apiErr.Error.Message)
-	}
+	var lastErr error
+	for _, model := range g.modelsToTry() {
+		for attempt := 1; attempt <= 2; attempt++ {
+			endpoint := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, model, url.QueryEscape(g.APIKey))
+			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+			if err != nil {
+				return nil, err
+			}
+			httpReq.Header.Set("content-type", "application/json")
 
-	var resp geminiResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, err
-	}
-	slog.Info("llm call", "model", g.Model, "elapsed", time.Since(t0),
-		"in", resp.UsageMetadata.PromptTokenCount, "out", resp.UsageMetadata.CandidatesTokenCount)
+			httpResp, err := g.HTTPClient.Do(httpReq)
+			if err != nil {
+				lastErr = err
+				break
+			}
+			raw, err := io.ReadAll(httpResp.Body)
+			httpResp.Body.Close()
+			if err != nil {
+				return nil, err
+			}
+			if httpResp.StatusCode == http.StatusTooManyRequests || httpResp.StatusCode == http.StatusServiceUnavailable {
+				var apiErr geminiError
+				_ = json.Unmarshal(raw, &apiErr)
+				lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
+				slog.Warn("gemini busy, retrying", "model", model, "attempt", attempt, "status", httpResp.StatusCode)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(time.Duration(attempt) * 1500 * time.Millisecond):
+				}
+				continue
+			}
+			if httpResp.StatusCode >= 400 {
+				var apiErr geminiError
+				_ = json.Unmarshal(raw, &apiErr)
+				lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
+				slog.Warn("gemini rejected model, trying next", "model", model, "status", httpResp.StatusCode, "err", apiErr.Error.Message)
+				break
+			}
 
-	if cachePath != "" {
-		_ = os.WriteFile(cachePath, raw, 0o644)
+			var resp geminiResponse
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				return nil, err
+			}
+			slog.Info("llm call", "model", model, "elapsed", time.Since(t0),
+				"in", resp.UsageMetadata.PromptTokenCount, "out", resp.UsageMetadata.CandidatesTokenCount)
+			if cachePath != "" {
+				_ = os.WriteFile(cachePath, raw, 0o644)
+			}
+			return &resp, nil
+		}
 	}
-	return &resp, nil
+	if lastErr == nil {
+		lastErr = fmt.Errorf("gemini api: all models failed")
+	}
+	return nil, lastErr
 }
 
 func (g *GeminiLLM) Structured(ctx context.Context, system string, messages []Message, schema Schema) (map[string]any, error) {

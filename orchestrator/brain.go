@@ -39,6 +39,9 @@ var (
 	choiceOnlyRe  = regexp.MustCompile(`(?i)^\s*(?:option\s*)?([1-3])\s*[.!]?\s*$`)
 	approveOnlyRe = regexp.MustCompile(`(?i)^\s*(✅|👍|yes|yep|book it|approve)\s*!*\s*$`)
 	rejectOnlyRe  = regexp.MustCompile(`(?i)^\s*(❌|👎|no|nope)\s*!*\s*$`)
+	// One person stating facts about another (or about "he/she") — origin, dates, budget.
+	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
+	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
 )
 
 type Brain struct {
@@ -116,11 +119,41 @@ func fitsAvailability(o models.Option, availability []string) bool {
 	return true
 }
 
+func looksLikeWhatsAppID(s string) bool {
+	sl := strings.ToLower(s)
+	return strings.Contains(sl, "@g.us") || strings.Contains(sl, "@c.us") ||
+		strings.Contains(sl, "@lid") || strings.Contains(sl, "@s.whatsapp")
+}
+
+func displayFirstName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || looksLikeWhatsAppID(s) {
+		return ""
+	}
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return s
+	}
+	return fields[0]
+}
+
+var (
+	waJIDRe    = regexp.MustCompile(`@?[A-Za-z0-9._+-]+@(?:c\.us|g\.us|lid|s\.whatsapp\.net)`)
+	waAtNumRe  = regexp.MustCompile(`@\d{6,}`)
+	waSpacesRe = regexp.MustCompile(`[^\S\n]{2,}`)
+)
+
+func scrubWhatsAppIDs(text string) string {
+	text = waJIDRe.ReplaceAllString(text, "")
+	text = waAtNumRe.ReplaceAllString(text, "")
+	return strings.TrimSpace(waSpacesRe.ReplaceAllString(text, " "))
+}
+
 func formatGroupRoster(members []models.GroupMember) string {
 	var lines []string
 	for _, p := range members {
 		name := strings.TrimSpace(p.Name)
-		if name == "" || p.IsAgent {
+		if name == "" || p.IsAgent || looksLikeWhatsAppID(name) {
 			continue
 		}
 		lines = append(lines, "- "+name)
@@ -134,7 +167,7 @@ func snapNamesToRoster(people []models.Participant, roster []models.GroupMember)
 	var rosterPeople []models.Participant
 	for _, p := range roster {
 		name := strings.TrimSpace(p.Name)
-		if name == "" || p.IsAgent {
+		if name == "" || p.IsAgent || looksLikeWhatsAppID(name) {
 			continue
 		}
 		rosterPeople = append(rosterPeople, models.Participant{WhatsAppName: name, PID: p.ID})
@@ -148,6 +181,40 @@ func snapNamesToRoster(people []models.Participant, roster []models.GroupMember)
 		}
 	}
 	return people
+}
+
+func looksLikePrefUpdate(text string, people []models.Participant, roster []models.GroupMember) bool {
+	if proxyPrefRe.MatchString(text) {
+		return true
+	}
+	if !prefFactRe.MatchString(text) {
+		return false
+	}
+	low := strings.ToLower(text)
+	var names []string
+	for _, p := range people {
+		names = append(names, p.WhatsAppName)
+	}
+	for _, m := range roster {
+		if m.IsAgent {
+			continue
+		}
+		names = append(names, m.Name)
+	}
+	for _, n := range names {
+		fields := strings.Fields(strings.TrimSpace(n))
+		if len(fields) == 0 {
+			continue
+		}
+		first := strings.ToLower(fields[0])
+		if len(first) < 3 {
+			continue
+		}
+		if strings.Contains(low, first) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchName matches a chat display name to an extracted participant. Chat names and Gemini's
@@ -200,7 +267,7 @@ func (b *Brain) Handle(ctx context.Context, m models.IncomingMessage) {
 
 	if err := b.handle(ctx, m); err != nil {
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
-		if sayErr := b.say(ctx, m.GroupID, "Oops, something broke on my end 🛠️ Give me a sec and try again.", nil); sayErr != nil {
+		if sayErr := b.say(ctx, m.GroupID, "Something broke on my end. Try that again.", nil); sayErr != nil {
 			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
 		}
 	}
@@ -262,14 +329,17 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	switch trip.State {
 	case models.Collecting:
-		if m.Tagged {
-			return b.plan(ctx, trip, "", m)
+		if m.Tagged || looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
+			return b.plan(ctx, trip, m.Text, m)
 		}
 	case models.AwaitingChoice, models.AwaitingApproval:
+		if looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
+			return b.plan(ctx, trip, m.Text, m)
+		}
 		return b.onReply(ctx, trip, m)
 	case models.Searching, models.BookingState:
 		if m.Tagged {
-			return b.say(ctx, m.GroupID, "On it, hang tight ⏳", nil)
+			return b.say(ctx, m.GroupID, "Still looking that up. I'll post it here when it's ready.", nil)
 		}
 	}
 	return nil
@@ -289,32 +359,29 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	transcript := strings.Join(lines, "\n")
 	day := b.today().Format("2006-01-02")
 
-	// Two Gemini calls take 5-20s; an instant ack keeps the group chat from going silent.
-	if err := b.say(ctx, trip.GroupID, "Reading the chat 🧠 give me a few seconds…", nil); err != nil {
-		return err
-	}
-
 	userContent := fmt.Sprintf("Group: %s\n", trip.GroupName)
 	if roster := formatGroupRoster(incoming.Participants); roster != "" {
 		userContent += "People actually in this WhatsApp group (use these exact names for whatsapp_name; skip the bot):\n" + roster + "\n\n"
 	}
 	userContent += "Group chat:\n" + transcript
+	if feedback != "" {
+		userContent += "\n\nLatest update from the group (may be one person speaking for another):\n" + feedback
+	}
 
-	extracted, err := b.LLM.Structured(ctx, prompts.ExtractSystem(day),
+	planned, err := b.LLM.Structured(ctx, prompts.PlanSystem(b.Config.BotName, day),
 		[]llm.Message{{Role: "user", Content: userContent}},
-		toSchema(prompts.RecordPreferences))
+		toSchema(prompts.PlanTrip))
 	if err != nil {
 		return err
 	}
 
 	var people []models.Participant
-	if err := decodeInto(extracted["participants"], &people); err != nil {
+	if err := decodeInto(planned["participants"], &people); err != nil {
 		return err
 	}
 	people = snapNamesToRoster(people, incoming.Participants)
 	if len(people) == 0 {
-		return b.say(ctx, trip.GroupID, "I need a bit more to go on. Where's everyone flying from, "+
-			"which dates work, and what's your budget?", nil)
+		return b.say(ctx, trip.GroupID, "I need a bit more. Where is everyone flying from, which dates work, and what's the budget?", nil)
 	}
 	for i := range people {
 		if people[i].PID == "" {
@@ -338,11 +405,13 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	var noOrigin []string
 	for _, p := range people {
 		if p.OriginAirport == "" {
-			noOrigin = append(noOrigin, p.WhatsAppName)
+		if n := displayFirstName(p.WhatsAppName); n != "" {
+			noOrigin = append(noOrigin, n)
+		}
 		}
 	}
 	var missingInfo []string
-	if err := decodeInto(extracted["missing_info"], &missingInfo); err != nil {
+	if err := decodeInto(planned["missing_info"], &missingInfo); err != nil {
 		return err
 	}
 	if len(noOrigin) > 0 || len(missingInfo) > 0 {
@@ -351,16 +420,43 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 			asks = append(asks, fmt.Sprintf("Where are %s flying from?", strings.Join(noOrigin, ", ")))
 		}
 		asks = append(asks, missingInfo...)
-		return b.say(ctx, trip.GroupID, "Almost there! "+strings.Join(asks, " ")+
-			fmt.Sprintf(" Tell me and @%s again.", b.Config.BotName), nil)
+		return b.say(ctx, trip.GroupID, strings.Join(asks, " ")+" Reply here and I'll use it.", nil)
 	}
 
-	trip, intro, options, ok, err := b.propose(ctx, trip, people, day, feedback, false)
-	if err != nil {
-		return err
+	var options []models.Option
+	if rawOptions, ok := planned["options"].([]any); ok {
+		for _, raw := range rawOptions {
+			if len(options) >= 3 {
+				break
+			}
+			m, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			opt, err := optionFromMap(len(options)+1, m)
+			if err != nil {
+				slog.Warn("dropping invalid option", "option", m, "err", err)
+				continue
+			}
+			options = append(options, opt)
+		}
 	}
-	if !ok {
-		return nil
+
+	intro, _ := planned["intro"].(string)
+	if len(options) == 0 {
+		var ok bool
+		trip, intro, options, ok, err = b.propose(ctx, trip, people, day, feedback, true)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+	} else {
+		trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"options": options})
+		if err != nil {
+			return err
+		}
 	}
 
 	if trip.State != models.AwaitingChoice {
@@ -422,14 +518,7 @@ func (b *Brain) propose(ctx context.Context, trip *models.Trip, people []models.
 
 	violations := validateOptions(options, people)
 	if len(violations) == len(options) && !retried {
-		var detailParts []string
-		for dest, issues := range violations {
-			detailParts = append(detailParts, fmt.Sprintf("%s: %s.", dest, strings.Join(issues, "; ")))
-		}
-		detail := strings.Join(detailParts, " ")
-		slog.Info("trip: every option violates someone's dates, re-asking once", "trip", trip.ID)
-		return b.propose(ctx, trip, people, day, fmt.Sprintf(
-			"Every option broke someone's dates. %s Try again, fitting every participant's availability exactly.", detail), true)
+		slog.Info("trip: options may not fit every date window", "trip", trip.ID)
 	}
 
 	trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"options": options})
@@ -545,16 +634,18 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		if revision == "" {
 			revision = m.Text
 		}
-		return b.replan(ctx, trip, revision)
+		return b.plan(ctx, trip, revision, m)
 	case kind == "cancel":
 		if _, err := store.SetState(ctx, b.Store, trip.ID, models.Cancelled, nil); err != nil {
 			return err
 		}
-		return b.say(ctx, trip.GroupID, "Trip planning cancelled. @ me whenever you want to start again 👋", nil)
+		return b.say(ctx, trip.GroupID, "Trip planning cancelled. Tag me when you want to start again.", nil)
 	case kind == "question":
 		return b.answerQuestion(ctx, trip, m)
+	case kind == "other" && m.Tagged:
+		return b.answerQuestion(ctx, trip, m)
 	case kind == "approve" && trip.State == models.AwaitingChoice:
-		return b.say(ctx, trip.GroupID, "Pick an option first. Reply 1, 2 or 3 👆", nil)
+		return b.say(ctx, trip.GroupID, "Pick an option first. Reply 1, 2, or 3.", nil)
 	}
 	return nil
 }
@@ -577,6 +668,9 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	}
 	if !m.Tagged {
 		return nil, nil // ordinary chatter: saved, but no reply and no LLM spend
+	}
+	if looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
+		return map[string]any{"intent": "revise", "revision_request": m.Text}, nil
 	}
 	optsDesc := "none"
 	if len(trip.Options) > 0 {
@@ -641,7 +735,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	if err != nil {
 		return err
 	}
-	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("%s it is! Finding flights and a hotel 🔎", option.Destination), nil); err != nil {
+	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("%s it is. Looking up flights and a hotel.", option.Destination), nil); err != nil {
 		return err
 	}
 
@@ -714,7 +808,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	}
 	chosen := trip.ChosenOption()
 	return b.say(ctx, trip.GroupID, formatting.SummaryMessage(*chosen, itinMap, people, trip.ID, b.Config.DashboardURL),
-		[]messaging.Button{{Label: "✅ Book it", Payload: "✅"}, {Label: "❌ Back", Payload: "❌"}})
+		[]messaging.Button{{Label: "Book it", Payload: "✅"}, {Label: "Back", Payload: "❌"}})
 }
 
 // ------------------------------------------------------------------ stage: book
@@ -736,7 +830,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 		return fmt.Errorf("trip %s has no chosen option", trip.ID)
 	}
 	itin := trip.Itinerary
-	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("Approved by %s! Booking now 🚀", approver), nil); err != nil {
+	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("Approved by %s. Booking now.", approver), nil); err != nil {
 		return err
 	}
 
@@ -793,7 +887,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 			return err
 		}
 		if liveURL != "" {
-			if err := b.say(ctx, trip.GroupID, fmt.Sprintf("Watch me book the hotel live 👀 %s", liveURL), nil); err != nil {
+			if err := b.say(ctx, trip.GroupID, fmt.Sprintf("Hotel booking: %s", liveURL), nil); err != nil {
 				return err
 			}
 		}
@@ -809,8 +903,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 			if _, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingApproval, nil); err != nil {
 				return err
 			}
-			return b.say(ctx, trip.GroupID, "Flights are booked ✈️ but the hotel booking hit a snag. "+
-				"Reply ✅ to retry the hotel.", nil)
+			return b.say(ctx, trip.GroupID, "Flights are booked, but the hotel booking failed. Reply yes to retry the hotel.", nil)
 		}
 
 		cost := hotel.TotalPrice
@@ -875,6 +968,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 // ------------------------------------------------------------------ outbound
 
 func (b *Brain) say(ctx context.Context, groupID, text string, buttons []messaging.Button) error {
+	text = scrubWhatsAppIDs(text)
 	if err := b.Messenger.Send(ctx, groupID, text, buttons); err != nil {
 		return err
 	}

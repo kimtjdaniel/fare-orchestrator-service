@@ -28,6 +28,15 @@ func (m *MockLLM) Structured(ctx context.Context, system string, messages []Mess
 		return Preferences, nil
 	case "propose_options":
 		return Options, nil
+	case "plan_trip":
+		out := map[string]any{}
+		for k, v := range Preferences {
+			out[k] = v
+		}
+		for k, v := range Options {
+			out[k] = v
+		}
+		return out, nil
 	case "interpret_reply":
 		var text string
 		if len(messages) > 0 {
