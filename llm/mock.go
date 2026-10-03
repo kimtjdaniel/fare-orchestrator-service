@@ -16,7 +16,9 @@ var (
 	numberRe  = regexp.MustCompile(`\b([1-3])\b`)
 )
 
-// MockLLM is a deterministic stand-in for Gemini, good enough to drive the whole flow offline.
+// MockLLM is a deterministic stand-in for Gemini. It only knows how to classify replies
+// (interpret_reply, via regex) offline; record_preferences/propose_options have no canned data
+// and need a real GeminiLLM (MOCK_LLM=false).
 type MockLLM struct {
 	Calls []string
 }
@@ -24,19 +26,6 @@ type MockLLM struct {
 func (m *MockLLM) Structured(ctx context.Context, system string, messages []Message, schema Schema) (map[string]any, error) {
 	m.Calls = append(m.Calls, schema.Name)
 	switch schema.Name {
-	case "record_preferences":
-		return Preferences, nil
-	case "propose_options":
-		return Options, nil
-	case "plan_trip":
-		out := map[string]any{}
-		for k, v := range Preferences {
-			out[k] = v
-		}
-		for k, v := range Options {
-			out[k] = v
-		}
-		return out, nil
 	case "interpret_reply":
 		var text string
 		if len(messages) > 0 {

@@ -92,7 +92,27 @@ func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen model
 	if err := b.sendPoll(ctx, trip.GroupID, "Book this one?", []string{"Yes, book it", "Show the other options"}, "approve", trip.ID); err != nil {
 		return err
 	}
-	return nil
+	return b.askWhoPays(ctx, trip, people)
+}
+
+func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []models.Participant) error {
+	if hasDesignatedPayer(people) {
+		return nil
+	}
+	names := make([]string, len(people))
+	for i, p := range people {
+		names[i] = p.WhatsAppName
+	}
+	return b.sendPoll(ctx, trip.GroupID, "Who's paying?", names, "payer", trip.ID)
+}
+
+func hasDesignatedPayer(people []models.Participant) bool {
+	for _, p := range people {
+		if p.Payer {
+			return true
+		}
+	}
+	return false
 }
 
 func (b *Brain) pollOptions(ctx context.Context, trip *models.Trip, options []models.Option) error {
@@ -421,6 +441,19 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 		return b.plan(ctx, trip, "Keep it in CAD. Group budget: "+selected, incoming)
 	case "vibe":
 		return b.plan(ctx, trip, "They want a "+selected+" trip", incoming)
+	case "payer":
+		match := matchName(selected, trip.Participants)
+		if match == nil {
+			return b.say(ctx, trip.GroupID, "Didn't catch who that was — tap the poll option again.", nil)
+		}
+		people := trip.Participants
+		for i := range people {
+			people[i].Payer = people[i].WhatsAppName == match.WhatsAppName
+		}
+		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"participants": people}); err != nil {
+			return err
+		}
+		return b.say(ctx, trip.GroupID, match.WhatsAppName+" is on the hook for this one. 💳", nil)
 	case "flights":
 		direct := strings.Contains(low, "direct")
 		if trip.FlightsLocked {
