@@ -84,6 +84,131 @@ type GroupMember struct {
 	IsAgent bool   `json:"is_agent,omitempty"`
 }
 
+// ---------- deterministic intake (WhatsApp Agent Flow Spec §3-§5) ----------
+//
+// This is additive, parallel data alongside the existing flat Trip/Participant fields (Origin,
+// DestinationAirport, etc.) that the AwaitingChoice-onward pipeline already reads — nothing here
+// replaces those. The intake turn controller (orchestrator/intake.go) is the only thing that
+// reads/writes this block; it owns the trip only while State == Collecting, and copies its
+// conclusions onto the existing flat fields once it hands off to the existing pipeline.
+
+// Confidence tracks how sure extraction is about a field: stated outright (confirmed), implied or
+// defaulted (inferred), or not yet known. Spec §4.1: inferred fields are good enough to not
+// re-ask, but get surfaced in the readiness summary so people can correct them.
+type Confidence string
+
+const (
+	Confirmed Confidence = "confirmed"
+	Inferred  Confidence = "inferred"
+	Unknown   Confidence = "unknown"
+)
+
+// FieldValue is one intake fact with provenance. Value is left as `any` because the fields it
+// backs vary in shape (a string, a number, a DateWindow, …); callers type-assert.
+type FieldValue struct {
+	Value      any        `json:"value,omitempty" bson:"value,omitempty"`
+	Confidence Confidence `json:"confidence" bson:"confidence"`
+	SourceID   string     `json:"source_id,omitempty" bson:"source_id,omitempty"` // a message_id or poll_id
+	UpdatedAt  time.Time  `json:"updated_at,omitempty" bson:"updated_at,omitempty"`
+}
+
+func (f FieldValue) Known() bool { return f.Confidence != "" && f.Confidence != Unknown }
+
+func (f FieldValue) AsString() string {
+	s, _ := f.Value.(string)
+	return s
+}
+
+// DateWindow is an inclusive earliest/latest range (ISO YYYY-MM-DD), used for the intake
+// field.date_window before exact dates are nailed down to a single pair.
+type DateWindow struct {
+	Earliest string `json:"earliest,omitempty" bson:"earliest,omitempty"`
+	Latest   string `json:"latest,omitempty" bson:"latest,omitempty"`
+}
+
+// NightsRange is a min/max trip length in nights.
+type NightsRange struct {
+	Min int `json:"min,omitempty" bson:"min,omitempty"`
+	Max int `json:"max,omitempty" bson:"max,omitempty"`
+}
+
+// ExactDates is a single confirmed depart/return pair, the thing a date poll resolves to.
+type ExactDates struct {
+	Depart string `json:"depart,omitempty" bson:"depart,omitempty"`
+	Return string `json:"return,omitempty" bson:"return,omitempty"`
+}
+
+// BudgetPP is per-person budget, resolved from a poll range or a stated number.
+type BudgetPP struct {
+	Min      float64  `json:"min,omitempty" bson:"min,omitempty"`
+	Max      float64  `json:"max,omitempty" bson:"max,omitempty"`
+	Currency string   `json:"currency,omitempty" bson:"currency,omitempty"`
+	Includes []string `json:"includes,omitempty" bson:"includes,omitempty"` // "flights","stay","food","activities"
+}
+
+// DateRange is one date span a participant said they're available for (spec §3's
+// participants[].available).
+type DateRange struct {
+	Start    string `json:"start" bson:"start"`
+	End      string `json:"end" bson:"end"`
+	SourceID string `json:"source_id,omitempty" bson:"source_id,omitempty"`
+}
+
+// TripIntake is the trip-level half of spec §3's intake block. Per-person facts (origin,
+// availability, budget) live on ParticipantIntake instead — TripIntake.Destination/Vibe/
+// Constraints are the only fields that are inherently trip-wide rather than derived from people.
+type TripIntake struct {
+	Headcount   FieldValue  `json:"headcount,omitempty" bson:"headcount,omitempty"`
+	Children    FieldValue  `json:"children,omitempty" bson:"children,omitempty"`
+	DateWindow  *DateWindow `json:"date_window,omitempty" bson:"date_window,omitempty"`
+	Nights      NightsRange `json:"nights,omitempty" bson:"nights,omitempty"`
+	ExactDates  *ExactDates `json:"exact_dates,omitempty" bson:"exact_dates,omitempty"`
+	BudgetPP    *BudgetPP   `json:"budget_pp,omitempty" bson:"budget_pp,omitempty"`
+	Vibe        FieldValue  `json:"vibe,omitempty" bson:"vibe,omitempty"`
+	Destination FieldValue  `json:"destination,omitempty" bson:"destination,omitempty"`
+	Constraints FieldValue  `json:"constraints,omitempty" bson:"constraints,omitempty"`
+}
+
+// ParticipantIntake is the per-person half of spec §3's participants[] shape. Embedded as a
+// pointer on Participant so trips created before this spec (nil) don't need a migration.
+type ParticipantIntake struct {
+	Attendance  string      `json:"attendance,omitempty" bson:"attendance,omitempty"` // coming|maybe|not_coming|unknown
+	Origin      FieldValue  `json:"origin,omitempty" bson:"origin,omitempty"`
+	Available   []DateRange `json:"available,omitempty" bson:"available,omitempty"`
+	BudgetPP    FieldValue  `json:"budget_pp,omitempty" bson:"budget_pp,omitempty"`
+	Constraints []string    `json:"constraints,omitempty" bson:"constraints,omitempty"`
+}
+
+// PendingQuestion is the one outstanding ask the turn controller is waiting on (spec §3/§4.2:
+// never stack two questions). AskedTo is "group" or a specific wa_id.
+type PendingQuestion struct {
+	Field   string    `json:"field" bson:"field"`
+	AskedAt time.Time `json:"asked_at" bson:"asked_at"`
+	PollID  string    `json:"poll_id,omitempty" bson:"poll_id,omitempty"`
+	AskedTo string    `json:"asked_to" bson:"asked_to"`
+}
+
+// Conflict is one detected contradiction the turn controller is surfacing to the group
+// (spec §4.4) rather than silently resolving.
+type Conflict struct {
+	Field       string `json:"field" bson:"field"`
+	Description string `json:"description" bson:"description"`
+	Resolved    bool   `json:"resolved" bson:"resolved"`
+}
+
+// IntakePoll is one poll the intake turn controller posted, tracked so it can tell when every
+// expected voter has answered (spec §4.3) without re-deriving that from the robot each time.
+type IntakePoll struct {
+	PollMessageID  string              `json:"poll_message_id" bson:"poll_message_id"`
+	Field          string              `json:"field" bson:"field"`
+	Options        []string            `json:"options" bson:"options"`
+	Multi          bool                `json:"multi" bson:"multi"`
+	ExpectedVoters []string            `json:"expected_voters,omitempty" bson:"expected_voters,omitempty"`
+	Votes          map[string][]string `json:"votes" bson:"votes"` // voter_id -> selected option labels
+	CreatedAt      time.Time           `json:"created_at" bson:"created_at"`
+	Closed         bool                `json:"closed" bson:"closed"`
+}
+
 func (m *IncomingMessage) UnmarshalJSON(data []byte) error {
 	type flat IncomingMessage
 	var f flat
@@ -183,6 +308,7 @@ type AccommodationPreferences struct {
 // and passport data live in the 1Password vault, never here — only whether they've uploaded it.
 type Participant struct {
 	PID                  string `json:"pid" bson:"pid"`
+	WaID                 string `json:"wa_id,omitempty" bson:"wa_id,omitempty"` // stable WhatsApp id, when known — the intake turn controller's preferred match key over WhatsAppName
 	WhatsAppName         string `json:"whatsapp_name" bson:"whatsapp_name"`
 	Payer                bool   `json:"payer" bson:"payer"`
 	UploadedPaymentInfo  bool   `json:"uploaded_payment_info" bson:"uploaded_payment_info"`
@@ -198,6 +324,10 @@ type Participant struct {
 	GeneralPreferences       GeneralPreferences       `json:"general_preferences" bson:"general_preferences"`
 	FlightPreferences        FlightPreferences        `json:"flight_preferences" bson:"flight_preferences"`
 	AccommodationPreferences AccommodationPreferences `json:"accommodation_preferences" bson:"accommodation_preferences"`
+
+	// Intake is the confidence-tracked per-person intake data (spec §3). Nil for trips/participants
+	// that predate this, or that never went through the deterministic intake flow.
+	Intake *ParticipantIntake `json:"intake,omitempty" bson:"intake,omitempty"`
 }
 
 // Option is one proposed destination, shown during the vote. Options are never independently
@@ -315,6 +445,31 @@ type PendingTripRequest struct {
 	SenderName string    `json:"sender_name" bson:"sender_name"`
 	SentAt     time.Time `json:"sent_at" bson:"sent_at"`
 	Question   string    `json:"question" bson:"question"`
+	PendingApprover string         `json:"pending_approver,omitempty" bson:"pending_approver,omitempty"`
+	HistoryStart    *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
+	AskedOrigin     bool           `json:"asked_origin" bson:"asked_origin"`
+	AskedDates      bool           `json:"asked_dates" bson:"asked_dates"`
+	AskedPayer      bool           `json:"asked_payer" bson:"asked_payer"`
+	PayerName       string         `json:"payer_name,omitempty" bson:"payer_name,omitempty"`
+	Introduced      bool           `json:"introduced" bson:"introduced"`
+	SharedDashboard bool           `json:"shared_dashboard" bson:"shared_dashboard"`
+	LastPoll        string         `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
+	Roster          []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`
+	BudgetNote      string         `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
+	FlightsLocked   bool           `json:"flights_locked" bson:"flights_locked"`
+	PendingChange   *PendingChange `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
+
+	// Deterministic intake (spec §3-§4). Owned exclusively by the intake turn controller
+	// (orchestrator/intake.go) while State == Collecting; untouched afterward.
+	OrganizerWaID   string           `json:"organizer_wa_id,omitempty" bson:"organizer_wa_id,omitempty"`
+	Intake          *TripIntake      `json:"intake,omitempty" bson:"intake,omitempty"`
+	PendingQuestion *PendingQuestion `json:"pending_question,omitempty" bson:"pending_question,omitempty"`
+	Conflicts       []Conflict       `json:"conflicts,omitempty" bson:"conflicts,omitempty"`
+	IntakePolls     []IntakePoll     `json:"intake_polls,omitempty" bson:"intake_polls,omitempty"`
+	LastAgentText   string           `json:"last_agent_text,omitempty" bson:"last_agent_text,omitempty"` // spec §6.2: never repeat the previous message verbatim
+
+	CreatedAt time.Time `json:"created_at" bson:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" bson:"updated_at"`
 }
 
 // PendingChange is a proposed update to already-set trip details. It only applies

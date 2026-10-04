@@ -90,6 +90,8 @@ var allowedTripFields = map[string]bool{
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 	"pending_trip_request": true,
+	"organizer_wa_id": true, "intake": true, "pending_question": true, "conflicts": true,
+	"intake_polls": true, "last_agent_text": true,
 }
 
 // applyTripFields mutates trip in place from a whitelisted fields map, shared by MemoryStore and
@@ -196,6 +198,34 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 				cp := pc
 				trip.PendingChange = &cp
 			}
+		case "organizer_wa_id":
+			trip.OrganizerWaID, _ = v.(string)
+		case "intake":
+			switch iv := v.(type) {
+			case nil:
+				trip.Intake = nil
+			case *models.TripIntake:
+				trip.Intake = iv
+			case models.TripIntake:
+				cp := iv
+				trip.Intake = &cp
+			}
+		case "pending_question":
+			switch pq := v.(type) {
+			case nil:
+				trip.PendingQuestion = nil
+			case *models.PendingQuestion:
+				trip.PendingQuestion = pq
+			case models.PendingQuestion:
+				cp := pq
+				trip.PendingQuestion = &cp
+			}
+		case "conflicts":
+			trip.Conflicts, _ = v.([]models.Conflict)
+		case "intake_polls":
+			trip.IntakePolls, _ = v.([]models.IntakePoll)
+		case "last_agent_text":
+			trip.LastAgentText, _ = v.(string)
 		}
 	}
 	trip.UpdatedAt = models.Now()

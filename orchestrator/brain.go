@@ -615,10 +615,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
 			return nil
 		}
-		if looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text) {
-			return b.handleBookAsk(ctx, trip, m)
-		}
-		return b.plan(ctx, trip, m.Text, m)
+		// No book-ask shortcut here: a brand-new trip has no chosen option yet, so "let's book" /
+		// "sounds good" said during intake can only be answering the current intake question —
+		// runIntakeTurn's own extraction.Approval handles an explicit ✅ at the readiness gate.
+		return b.runIntakeTurn(ctx, trip, m)
 	}
 
 	if trip.State == models.Booked {
@@ -671,7 +671,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 					return err
 				}
 			}
-			return b.plan(ctx, trip, m.Text, m)
+			return b.runIntakeTurn(ctx, trip, m)
 		}
 		return nil
 	}
@@ -688,7 +688,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		}
 	}
 
-	if looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text) {
+	// Scoped to non-Collecting states: during intake there's no chosen option yet, so "let's
+	// book"/"sounds good" phrasing can only be answering the current intake question, not a real
+	// book-ask. runIntakeTurn's own extraction.Approval handles an explicit ✅ at the readiness gate.
+	if trip.State != models.Collecting && (looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text)) {
 		return b.handleBookAsk(ctx, trip, m)
 	}
 
@@ -700,7 +703,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
 			return nil
 		}
-		return b.plan(ctx, trip, m.Text, m)
+		return b.runIntakeTurn(ctx, trip, m)
 	case models.AwaitingChoice, models.AwaitingApproval:
 		return b.onReply(ctx, trip, m)
 	case models.Searching, models.BookingState:

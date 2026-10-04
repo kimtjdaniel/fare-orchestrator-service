@@ -9,12 +9,16 @@ import (
 )
 
 var (
-	approveRe      = regexp.MustCompile(`(?i)✅|👍|\b(yes|yep|approve|book it|do it|go)\b`)
-	rejectRe       = regexp.MustCompile(`(?i)❌|👎|\b(no|nope|reject)\b`)
-	cancelRe       = regexp.MustCompile(`(?i)\b(cancel|start over|never ?mind)\b`)
-	reviseRe       = regexp.MustCompile(`(?i)\b(cheaper|instead|swap|change|different)\b`)
-	numberRe       = regexp.MustCompile(`\b([1-3])\b`)
-	routeNewTripRe = regexp.MustCompile(`(?i)\b(?:(?:plan|organize)\s+(?:a|an|another|new|separate)\s+(?:[\p{L}\p{N}-]+\s+){0,6}(?:trip|vacation|holiday)|(?:start|create|plan)\s+(?:a\s+)?(?:new|another|separate)\s+(?:trip|vacation|holiday|(?:planning\s+)?session)|(?:start|create)\s+(?:a|an)\s+(?:trip|vacation|holiday|(?:planning\s+)?session))\b`)
+	approveRe    = regexp.MustCompile(`(?i)✅|👍|\b(yes|yep|approve|book it|do it|go)\b`)
+	rejectRe     = regexp.MustCompile(`(?i)❌|👎|\b(no|nope|reject)\b`)
+	cancelRe     = regexp.MustCompile(`(?i)\b(cancel|start over|never ?mind)\b`)
+	reviseRe     = regexp.MustCompile(`(?i)\b(cheaper|instead|swap|change|different)\b`)
+	numberRe     = regexp.MustCompile(`\b([1-3])\b`)
+	startTripRe  = regexp.MustCompile(`(?i)\bplan (a|the) trip\b|\bwhere should we go\b`)
+	dateRangeRe  = regexp.MustCompile(`(\d{4}-\d{2}-\d{2})\s*(?:to|\.\.)\s*(\d{4}-\d{2}-\d{2})`)
+	nightsRe     = regexp.MustCompile(`(\d+)\s*nights?`)
+	includesRe   = regexp.MustCompile(`(?i)flights?(?:\s*\+|\s+and\s+|,)\s*(?:stay|hotel)`)
+	noneConstrRe = regexp.MustCompile(`(?i)^\s*none\s*\.?\s*$`)
 )
 
 // MockLLM is a deterministic stand-in for Gemini. It classifies replies and basic trip routing
@@ -80,6 +84,59 @@ func (m *MockLLM) Structured(ctx context.Context, system string, messages []Mess
 			}
 			return map[string]any{"intent": intent}, nil
 		}
+
+	case "intake_extract":
+		var text string
+		if len(messages) > 0 {
+			if s, ok := messages[len(messages)-1].Content.(string); ok {
+				text = s
+			}
+		}
+		intent := "none"
+		switch {
+		case cancelRe.MatchString(text):
+			intent = "cancel"
+		case startTripRe.MatchString(text):
+			intent = "start"
+		}
+		approval := "none"
+		switch {
+		case approveRe.MatchString(text):
+			approval = "yes"
+		case rejectRe.MatchString(text):
+			approval = "no"
+		}
+		var updates []map[string]any
+		if dm := dateRangeRe.FindStringSubmatch(text); dm != nil {
+			updates = append(updates, map[string]any{"scope": "trip", "field": "date_window", "value_text": dm[1] + ".." + dm[2], "confidence": "confirmed"})
+		}
+		if nm := nightsRe.FindStringSubmatch(text); nm != nil {
+			updates = append(updates, map[string]any{"scope": "trip", "field": "nights", "value_text": nm[1], "confidence": "confirmed"})
+		}
+		if includesRe.MatchString(text) {
+			updates = append(updates, map[string]any{"scope": "trip", "field": "budget_includes", "value_text": "flights,stay", "confidence": "confirmed"})
+		}
+		if noneConstrRe.MatchString(text) {
+			updates = append(updates, map[string]any{"scope": "trip", "field": "constraints", "value_text": "none", "confidence": "confirmed"})
+		}
+		return map[string]any{
+			"trip_intent": intent, "updates": updates,
+			"answers_pending_question": len(updates) > 0 || approval != "none",
+			"approval":                 approval,
+		}, nil
+
+	case "intake_writer":
+		var slot string
+		if len(messages) > 0 {
+			if s, ok := messages[len(messages)-1].Content.(string); ok {
+				slot = s
+			}
+		}
+		return map[string]any{"text": "(mock) " + slot}, nil
+
+	case "destination_suggestions":
+		return map[string]any{"cities": []string{"Lisbon", "Mexico City", "Costa Rica"}}, nil
+
 	default:
 		return nil, fmt.Errorf("MockLLM has no canned answer for %s", schema.Name)
 	}
