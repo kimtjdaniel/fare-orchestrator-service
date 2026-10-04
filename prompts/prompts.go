@@ -281,7 +281,7 @@ var DayItinerary = map[string]any{
 						"body":     map[string]any{"type": "string", "description": "Morning / afternoon / evening in a few sentences."},
 						"food_cad": map[string]any{"type": "number", "description": "Optional rough CAD for that day's meals per person."},
 					},
-					"required":             []string{"title", "body"},
+					"required":             []string{"title", "body", "activities"},
 					"additionalProperties": false,
 				},
 			},

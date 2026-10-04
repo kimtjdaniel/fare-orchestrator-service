@@ -48,7 +48,10 @@ func looksLikeReplan(text string) bool {
 }
 
 func (b *Brain) dashboardOnce(trip *models.Trip) string {
-	return ""
+	if trip.SharedDashboard {
+		return ""
+	}
+	return strings.TrimSpace(b.Config.DashboardURL)
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {

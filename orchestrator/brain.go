@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"fare-brain/config"
+	"fare-brain/dashboard"
 	"fare-brain/formatting"
 	"fare-brain/llm"
 	"fare-brain/messaging"
@@ -59,6 +60,7 @@ var (
 )
 
 type Brain struct {
+	Dashboard *dashboard.Manager
 	Store     store.Store
 	LLM       llm.LLM
 	Messenger messaging.Messenger
@@ -448,6 +450,9 @@ func (b *Brain) handleLocked(ctx context.Context, m models.IncomingMessage) {
 	ctx = messaging.WithReplyTo(ctx, m.MessageID)
 
 	if err := b.handle(ctx, m); err != nil {
+		if b.Dashboard != nil {
+			_ = b.Dashboard.Emit(ctx, m.GroupID, "session.failed", map[string]any{"message": "Trip planning could not finish. Please try again in the group chat."})
+		}
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
 		if sayErr := b.say(ctx, m.GroupID, geminiFailTalk(err), nil); sayErr != nil {
 			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
@@ -502,8 +507,8 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	}
 
 	_, _ = b.Store.SaveWhatsAppSession(ctx, "group:"+m.GroupID, map[string]any{
-		"trip_id": m.GroupID,
-		"group":   m.GroupName,
+		"trip_id":  m.GroupID,
+		"group":    m.GroupName,
 		"agent_id": m.AgentID,
 	})
 
@@ -599,6 +604,14 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		return nil
 	}
 
+	// A persisted trip can still be awaiting input after its dashboard session failed.
+	// Restore the live session before routing replies or itinerary requests.
+	if b.Dashboard != nil && m.Tagged && (trip.State == models.Collecting || trip.State == models.AwaitingChoice) {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
+	}
+
 	slog.Info("trip loaded", "group", m.GroupID, "state", trip.State,
 		"people", len(trip.Participants), "options", len(trip.Options),
 		"origin", trip.Origin, "dates", hasAnyDates(trip.Participants))
@@ -629,7 +642,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	switch trip.State {
 	case models.Collecting:
-		if m.Tagged && looksLikeItineraryAsk(m.Text) {
+		if m.Tagged && looksLikeItineraryAsk(m.Text) && tripDestination(trip) != "" {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
 		if m.Tagged && looksLikeRestaurantAsk(m.Text) {
@@ -658,6 +671,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 // ------------------------------------------------------------------ stage: plan
 
 func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
+	}
 	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 1000, true)
 	if err != nil {
 		return err
@@ -1075,9 +1093,10 @@ func tripFacts(trip *models.Trip) map[string]any {
 		"destination":         trip.Destination,
 		"destination_airport": trip.DestinationAirport,
 		"dates":               []string{trip.EmbarkingDate, trip.ReturningDate},
+		"cost_per_person_cad": trip.CostPerPerson,
+		"duration_nights":     trip.DurationNights,
 		"budget_note_cad":     trip.BudgetNote,
 		"flights_locked":      trip.FlightsLocked,
-		"duration_nights":     trip.DurationNights,
 		"headcount":           len(trip.Participants),
 	}
 	if spend := formatting.ComputeSpend(trip); spend.Ok() {
@@ -1416,24 +1435,49 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		originAirport = people[0].OriginAirport
 	}
 
-	offers, err := tools.SearchFlights(ctx, b.Config, originAirport, option.DestinationAirport, option.EmbarkingDate, option.ReturningDate)
-	if err != nil || len(offers) == 0 {
-		if _, sErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); sErr != nil {
-			return sErr
+	offers, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
+	if flightErr != nil || len(offers) == 0 || hotelErr != nil || len(hotels) == 0 {
+		message := "No matching flight and hotel combination was found. Choose another option in the group chat."
+		if flightErr != nil || hotelErr != nil {
+			message = "A travel search could not finish. Please try another option in the group chat."
 		}
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("No luck on flights to %s from %s. Want to try another option?",
-			option.Destination, originAirport), nil)
-	}
-	offer := offers[0]
-
-	hotels, err := tools.SearchHotels(ctx, b.Config, option.Destination, option.EmbarkingDate, option.ReturningDate, len(people), nil)
-	if err != nil || len(hotels) == 0 {
-		if _, sErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); sErr != nil {
-			return sErr
+		if err := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); err != nil {
+			return err
 		}
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("Couldn't find a hotel that works in %s. Want another option?", option.Destination), nil)
+		if _, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); err != nil {
+			return err
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
 	}
-	hotel := hotels[0]
+	if err := b.dashboardEvent(ctx, trip, "planning.started", map[string]any{"message": "Building your itinerary"}); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "running", "Comparing flight prices"); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "hotel-location", "running", "Choosing a hotel in your destination"); err != nil {
+		return err
+	}
+	offer, hotel, selectionReason, err := b.selectTravelPlan(ctx, trip, offers, hotels)
+	if err != nil {
+		message := "Travel options arrived, but the trip planner could not select a plan. Please choose the option again to retry."
+		if eventErr := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); eventErr != nil {
+			return eventErr
+		}
+		if _, stateErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); stateErr != nil {
+			return stateErr
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
+	}
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "completed", "Selected the flight that best fits the group’s plan"); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "hotel-location", "completed", "Selected a stay to match the group’s preferences and budget"); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "group-budget", "running", "Calculating the group’s costs"); err != nil {
+		return err
+	}
 
 	names := make([]string, len(people))
 	payer := "the group"
@@ -1501,6 +1545,16 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	})
 	if err != nil {
 		return err
+	}
+	if err := b.finishDashboard(ctx, trip, offer, hotel); err != nil {
+		message := "Your flight and hotel were selected, but activity planning could not finish. Choose the option again to retry."
+		if eventErr := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); eventErr != nil {
+			return eventErr
+		}
+		if _, stateErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, map[string]any{"flights_locked": false}); stateErr != nil {
+			return stateErr
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
 	}
 	chosen := trip.ChosenOption()
 	return b.postSummary(ctx, trip, *chosen, itinMap, people)

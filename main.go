@@ -22,11 +22,13 @@ import (
 	"time"
 
 	"fare-brain/config"
+	"fare-brain/dashboard"
 	"fare-brain/llm"
 	"fare-brain/messaging"
 	"fare-brain/models"
 	"fare-brain/orchestrator"
 	"fare-brain/store"
+	"fare-brain/tools"
 )
 
 func main() {
@@ -71,7 +73,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	dashboardEvents := dashboard.New(st)
+	st = &dashboard.Store{Store: st, Dashboard: dashboardEvents}
 	brain := orchestrator.NewBrain(cfg, st, llmClient, messenger)
+	brain.Dashboard = dashboardEvents
 
 	storeKind := "memory"
 	if cfg.MongoURI != "" {
@@ -98,6 +103,8 @@ func main() {
 		"browser", browserKind, "messaging", cfg.MessagingBackend, "robot_auth", cfg.RobotToken != "")
 
 	mux := http.NewServeMux()
+	dashboardEvents.Register(mux)
+	mux.HandleFunc("POST /travel-search/results/{requestID}", tools.SearchResultsHandler)
 	mux.HandleFunc("GET /health", healthHandler(cfg))
 	mux.HandleFunc("POST /webhook", webhookHandler(brain))
 	mux.HandleFunc("POST /telegram/webhook", telegramWebhookHandler(cfg, brain))
