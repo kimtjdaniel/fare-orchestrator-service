@@ -30,7 +30,7 @@ func dashboardFlights(offers []models.FlightOffer) []map[string]any {
 		if duration == "" {
 			duration = "Duration unavailable"
 		}
-		rows = append(rows, map[string]any{"id": f.OfferID, "airline": f.Airline, "route": f.Origin + " → " + f.Destination, "price": f.Price, "currency": f.Currency, "duration": duration, "stops": stops, "departureTime": f.DepartureTime, "arrivalTime": f.ArrivalTime})
+		rows = append(rows, map[string]any{"id": f.OfferID, "source": f.Source, "airline": f.Airline, "route": f.Origin + " → " + f.Destination, "price": f.Price, "currency": f.Currency, "duration": duration, "stops": stops, "departureTime": f.DepartureTime, "arrivalTime": f.ArrivalTime})
 	}
 	return rows
 }
@@ -93,7 +93,7 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 		guests = 1
 	}
 	explanation, _ := out["intro"].(string)
-	plan := map[string]any{"flight": flight.Airline, "route": flight.Origin + " → " + flight.Destination, "flightPrice": flight.Price, "hotel": hotel.Name, "nights": t.DurationNights, "hotelPrice": hotel.TotalPrice / float64(guests), "explanation": explanation, "selectionReason": t.Itinerary["selection_reason"], "flightOfferId": flight.OfferID, "hotelOfferId": hotel.OfferID, "hotelSource": hotel.Source, "hotelPropertyType": hotel.PropertyType, "hotelOriginalRating": hotel.OriginalRating, "hotelOriginalRatingScale": hotel.OriginalRatingScale, "hotelPriceNote": hotel.PriceNote, "days": days, "isSampleSchedule": b.Config.MockLLM}
+	plan := map[string]any{"flight": flight.Airline, "route": flight.Origin + " → " + flight.Destination, "flightPrice": flight.Price, "flightSource": flight.Source, "hotel": hotel.Name, "nights": t.DurationNights, "hotelPrice": hotel.TotalPrice / float64(guests), "explanation": explanation, "selectionReason": t.Itinerary["selection_reason"], "flightOfferId": flight.OfferID, "hotelOfferId": hotel.OfferID, "hotelSource": hotel.Source, "hotelPropertyType": hotel.PropertyType, "hotelOriginalRating": hotel.OriginalRating, "hotelOriginalRatingScale": hotel.OriginalRatingScale, "hotelPriceNote": hotel.PriceNote, "days": days, "isSampleSchedule": b.Config.MockLLM}
 	itinerary := map[string]any{}
 	for key, value := range t.Itinerary {
 		itinerary[key] = value

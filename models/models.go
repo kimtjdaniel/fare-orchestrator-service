@@ -230,6 +230,7 @@ const (
 
 // Flight is one leg (embarking or returning) of the group's shared flight itinerary.
 type Flight struct {
+	Source        string          `json:"source,omitempty" bson:"source,omitempty"`
 	Direction     FlightDirection `json:"direction" bson:"direction"`
 	BookingStatus BookingStatus   `json:"booking_status" bson:"booking_status"`
 	DepartingDate time.Time       `json:"departing_date" bson:"departing_date"`
@@ -362,6 +363,12 @@ type WhatsAppSession struct {
 // ---------- travel tool results (P3 / P4 return these) ----------
 
 type FlightOffer struct {
+	Source              string  `json:"source,omitempty"`
+	BookingURL          string  `json:"booking_url,omitempty"`
+	ReturnDuration      string  `json:"return_duration,omitempty"`
+	ReturnStops         *int    `json:"return_stops,omitempty"`
+	ReturnDepartureTime string  `json:"return_departure_time,omitempty"`
+	ReturnArrivalTime   string  `json:"return_arrival_time,omitempty"`
 	Duration      string  `json:"duration,omitempty"`
 	Stops         int     `json:"stops"`
 	DepartureTime string  `json:"departure_time,omitempty"`
@@ -375,6 +382,29 @@ type FlightOffer struct {
 	Price         float64 `json:"price"`
 	Currency      string  `json:"currency"`
 	Summary       string  `json:"summary"` // "AC 554 dep 08:10, arr 11:35"
+}
+
+// ReturningOffer preserves source/link provenance and uses return details when supplied.
+// Google Flights retains the existing fallback until it exposes both legs.
+func (offer FlightOffer) ReturningOffer() FlightOffer {
+	leg := offer
+	leg.Origin, leg.Destination = offer.Destination, offer.Origin
+	if offer.ReturnDuration != "" {
+		leg.Duration = offer.ReturnDuration
+	}
+	if offer.ReturnStops != nil {
+		leg.Stops = *offer.ReturnStops
+	}
+	if offer.ReturnDepartureTime != "" {
+		leg.DepartureTime = offer.ReturnDepartureTime
+	}
+	if offer.ReturnArrivalTime != "" {
+		leg.ArrivalTime = offer.ReturnArrivalTime
+	}
+	if offer.ReturnDepartureTime != "" && offer.ReturnArrivalTime != "" {
+		leg.Summary = leg.DepartureTime + " → " + leg.ArrivalTime + " · " + leg.Duration
+	}
+	return leg
 }
 
 type HotelOffer struct {

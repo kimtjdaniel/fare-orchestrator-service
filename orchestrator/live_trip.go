@@ -94,6 +94,39 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		}
 		itin["selected_flight"] = offer
 		itin["selected_flight_id"] = strAny(offer["offer_id"])
+		var flight models.FlightOffer
+		if err := decodeInto(offer, &flight); err != nil {
+			return nil, err
+		}
+		returning, err := structToMap(flight.ReturningOffer())
+		if err != nil {
+			return nil, err
+		}
+		flightPlan := cloneMap(asMapAny(itin["flights"]))
+		if flightPlan == nil {
+			flightPlan = map[string]any{}
+		}
+		flightPlan["embarking"], flightPlan["returning"] = offer, returning
+		flightPlan["round_trip_each"] = flight.Price
+		itin["flights"] = flightPlan
+		flights := append([]models.Flight(nil), trip.Flights...)
+		for i := range flights {
+			half := flight.Price / 2
+			flights[i].Source, flights[i].BookingURL, flights[i].Costs = flight.Source, flight.BookingURL, &half
+		}
+		fields["flights"] = flights
+		spendTrip := *trip
+		spendTrip.Itinerary, spendTrip.Flights = itin, flights
+		if spend := formatting.ComputeSpend(&spendTrip); spend.Ok() {
+			itin["per_person"], itin["group_total"] = spend.TravelEach, spend.TravelGroup
+		}
+		if existing := asMapAny(itin["dashboard_plan"]); len(existing) > 0 {
+			plan := cloneMap(existing)
+			plan["flight"], plan["flightSource"] = offer["airline"], offer["source"]
+			plan["route"] = strAny(offer["origin"]) + " → " + strAny(offer["destination"])
+			plan["flightPrice"], plan["flightOfferId"] = offer["price"], offer["offer_id"]
+			itin["dashboard_plan"] = plan
+		}
 		fields["itinerary"] = itin
 	case "pick_hotel", "select_hotel":
 		offer := findItinOffer(itin["hotel_options"], strAny(body["offer_id"]))
@@ -343,6 +376,7 @@ func dashViewFlights(itin map[string]any) []map[string]any {
 		}
 		out = append(out, map[string]any{
 			"offer_id": id, "airline": strAny(m["airline"]),
+			"source": strAny(m["source"]), "booking_url": strAny(m["booking_url"]),
 			"origin": strAny(m["origin"]), "destination": strAny(m["destination"]),
 			"summary": strAny(m["summary"]), "price": floatOr(m["price"]),
 			"selected": id != "" && id == selID,

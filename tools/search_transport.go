@@ -226,6 +226,7 @@ func searchRecordingMetadata(agent string, result map[string]any) map[string]any
 			sources = append(sources, map[string]any{
 				"website": origin["website"], "origin": origin["origin"],
 				"status": origin["status"], "error": origin["error"],
+				"resultsComplete": origin["results_complete"], "warning": origin["warning"],
 				"recordingUrl": origin["recording_url"], "replayUrl": origin["replay_url"],
 				"recordingError":   origin["recording_error"],
 				"browserSessionId": origin["skyvern_browser_session_id"], "recordings": origin["recordings"],

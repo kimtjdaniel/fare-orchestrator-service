@@ -1651,8 +1651,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	preview := tools.ComputeSplit(names, offer.Price, hotel.TotalPrice, payer)
 
 	embarkOffer := offer
-	returnOffer := offer
-	returnOffer.Origin, returnOffer.Destination = offer.Destination, offer.Origin
+	returnOffer := offer.ReturningOffer()
 
 	itinMap, err := structToMap(map[string]any{
 		"flights": map[string]any{
@@ -1683,8 +1682,8 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	rd, _ := models.ParseDate(option.ReturningDate)
 	half := offer.Price / 2
 	flights := []models.Flight{
-		{Direction: models.Embarking, BookingStatus: models.StatusIncomplete, DepartingDate: ed, ArrivalDate: ed, Costs: &half},
-		{Direction: models.Returning, BookingStatus: models.StatusIncomplete, DepartingDate: rd, ArrivalDate: rd, Costs: &half},
+		{Direction: models.Embarking, BookingStatus: models.StatusIncomplete, DepartingDate: ed, ArrivalDate: ed, Costs: &half, Source: offer.Source, BookingURL: offer.BookingURL},
+		{Direction: models.Returning, BookingStatus: models.StatusIncomplete, DepartingDate: rd, ArrivalDate: rd, Costs: &half, Source: offer.Source, BookingURL: offer.BookingURL},
 	}
 	accommodations := []models.Accommodation{{
 		BookingStatus: models.StatusIncomplete, CheckInDate: ed, CheckOutDate: rd,
@@ -1942,6 +1941,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 		if err != nil {
 			return err
 		}
+		flights[i].Source, flights[i].BookingURL = offer.Source, offer.BookingURL
 		flights[i].BookingStatus = models.StatusBooked
 		flights[i].ProviderRef = fb.PNR
 		// fb.Price is the round-trip offer's per-person price (the same offer backs both legs);

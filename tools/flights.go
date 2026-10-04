@@ -34,7 +34,19 @@ func SearchFlights(ctx context.Context, cfg *config.Settings, origin, destinatio
 		if !ok {
 			continue
 		}
-		offers = append(offers, models.FlightOffer{OfferID: fmt.Sprintf("%s-%d", searchRecordText(result["search_id"]), i), Origin: searchRecordText(row["origin"]), Destination: searchRecordText(row["destination"]), DepartDate: departDate, ReturnDate: returnDate, Airline: searchRecordText(row["airline"]), Price: searchRecordNumber(row["price"]), Currency: searchRecordText(row["currency"]), Summary: fmt.Sprintf("%s → %s · %s · %.0f stops", searchRecordText(row["outbound_departure_time_text"]), searchRecordText(row["outbound_arrival_time_text"]), searchRecordText(row["outbound_duration_text"]), searchRecordNumber(row["outbound_stops"])), Duration: searchRecordText(row["outbound_duration_text"]), Stops: int(searchRecordNumber(row["outbound_stops"])), DepartureTime: searchRecordText(row["outbound_departure_time_text"]), ArrivalTime: searchRecordText(row["outbound_arrival_time_text"])})
+		source := searchRecordText(row["source"])
+		if source == "" {
+			source = searchRecordText(row["website"])
+		}
+		if source == "" {
+			source = "google_flights"
+		}
+		var returnStops *int
+		if n := searchRecordOptionalNumber(row["return_stops"]); n != nil {
+			stops := int(*n)
+			returnStops = &stops
+		}
+		offers = append(offers, models.FlightOffer{Source: source, BookingURL: searchRecordText(row["booking_url"]), ReturnDuration: searchRecordText(row["return_duration_text"]), ReturnStops: returnStops, ReturnDepartureTime: searchRecordText(row["return_departure_time_text"]), ReturnArrivalTime: searchRecordText(row["return_arrival_time_text"]), OfferID: fmt.Sprintf("%s-%d", searchRecordText(result["search_id"]), i), Origin: searchRecordText(row["origin"]), Destination: searchRecordText(row["destination"]), DepartDate: departDate, ReturnDate: returnDate, Airline: searchRecordText(row["airline"]), Price: searchRecordNumber(row["price"]), Currency: searchRecordText(row["currency"]), Summary: fmt.Sprintf("%s → %s · %s · %.0f stops", searchRecordText(row["outbound_departure_time_text"]), searchRecordText(row["outbound_arrival_time_text"]), searchRecordText(row["outbound_duration_text"]), searchRecordNumber(row["outbound_stops"])), Duration: searchRecordText(row["outbound_duration_text"]), Stops: int(searchRecordNumber(row["outbound_stops"])), DepartureTime: searchRecordText(row["outbound_departure_time_text"]), ArrivalTime: searchRecordText(row["outbound_arrival_time_text"])})
 	}
 	sort.Slice(offers, func(i, j int) bool { return offers[i].Price < offers[j].Price })
 	return offers, nil
@@ -58,7 +70,7 @@ func mockSearchFlights(origin, destination, departDate, returnDate string) []mod
 			price -= 60
 		}
 		offers = append(offers, models.FlightOffer{
-			OfferID: fmt.Sprintf("mock_off_%s%s_%s", origin, destination, a.code),
+			Source: "mock", OfferID: fmt.Sprintf("mock_off_%s%s_%s", origin, destination, a.code),
 			Origin:  origin, Destination: destination,
 			DepartDate: departDate, ReturnDate: returnDate,
 			Airline: a.name, Price: price, Currency: "CAD",

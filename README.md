@@ -356,3 +356,20 @@ A local `.env` with `MOCK_TRAVEL=true` uses sample stays and never invokes that
 Lambda. Set `MOCK_TRAVEL=false` and leave `HOTEL_SERVICE_WS_URL` empty to invoke
 the deployed hotel service over HTTP. Its deployed code must include the
 multi-source hotel search for Airbnb offers and recordings to appear.
+
+## Flight sources
+
+The flight search service can return Google Flights and KAYAK fares in the same
+`flights` list, with at most eight per website across the requested origins.
+`FlightOffer.source` identifies the provider; legacy rows without a source use
+`google_flights`. Optional `booking_url`, `return_duration`, `return_stops`,
+`return_departure_time`, and `return_arrival_time` preserve KAYAK's extra details.
+The selected itinerary and stored flight legs retain source/link provenance;
+the dashboard's chosen plan exposes `flightSource`. Gemini compares supplied
+offers from both sites and selects their existing unique offer IDs.
+
+Recording events retain all airport/source pairs under `sources`, including
+their separate archive/replay links, errors, partial status, `warning`, and
+`resultsComplete`. The legacy single recording link remains available.
+The new dual-source implementation requires deploying the updated flight Lambda;
+existing service URLs and callback endpoints stay the same.
