@@ -45,22 +45,22 @@ var (
 	searchAskRe   = regexp.MustCompile(`(?i)\b((?:let'?s|lets|can we|please|go ahead(?: and)?|start|ready to|time to|we should)\s+(?:search|look up|find|scout)|search(?:ing)?(?:\s+\w+){0,5}\s*(?:flight|hotel|stay|fare)|how about (?:the )?flights?|lock(?:ing)? in (?:these |the |those )?(?:specific )?(?:property|flight|hotel|option))`)
 	rejectOnlyRe  = regexp.MustCompile(`(?i)^\s*(❌|👎|no|nope)\s*!*\s*$`)
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
-	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
-	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
-	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|day[- ]?to[- ]?day|each day|every day|detailed (?:\w+\s+){0,3}plan|plan (?:for )?each day|things to do|what to visit|go visit|full \d+\s*-?\s*days?|day\s*\d+|neighbourhood|neighborhood|hidden gem)`)
-	restaurantAskRe = regexp.MustCompile(`(?i)\b(restaurants?|where to eat|places to eat|dinner spots?|food recs?|what (should|can|do) we eat|best (pizza|pasta|eats)|wine bars?|trattoria|where (?:are|should) we (?:eat|dine))\b`)
+	proxyPrefRe      = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
+	prefFactRe       = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
+	itineraryAskRe   = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|day[- ]?to[- ]?day|each day|every day|detailed (?:\w+\s+){0,3}plan|plan (?:for )?each day|things to do|what to visit|go visit|full \d+\s*-?\s*days?|day\s*\d+|neighbourhood|neighborhood|hidden gem)`)
+	restaurantAskRe  = regexp.MustCompile(`(?i)\b(restaurants?|where to eat|places to eat|dinner spots?|food recs?|what (should|can|do) we eat|best (pizza|pasta|eats)|wine bars?|trattoria|where (?:are|should) we (?:eat|dine))\b`)
 	restaurantListRe = regexp.MustCompile(`(?i)\b(top\s*\d+\s*restaurants?|list(?:\s+\w+){0,8}\s+restaurants?|restaurants?\s+by\s+(?:stars?|rating|maps)|best\s+restaurants?)\b`)
-	introAskRe     = regexp.MustCompile(`(?i)\b(introduce yourself|intro yourself|who are you|what (can|do) you do|what are you capable of|your capabilities|what can fare do)\b`)
-	greetingOnlyRe = regexp.MustCompile(`(?i)^(?:@\S+\s+)*(?:hi|hey|hello|yo|sup|what'?s up|help|you there)?[\s!.,?]*$`)
-	atTokenRe      = regexp.MustCompile(`(?i)@\S+`)
-	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay|map|pin)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
-	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:map|pin|link))|(?:send|show)(?:\s+\w+){0,3}\s+(?:map|pin))\b`)
-	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
-	iPayRe         = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
-	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked|which dates|what dates|when (?:are|do) we (?:go|leave|fly|heading))\b`)
-	flightAskRe    = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
-	cheaperAskRe   = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
-	foodMoneyRe    = regexp.MustCompile(`(?i)\b(factor in food|include food|food (?:cost|in (?:that|this|the total))|does that include food|is food (?:in|included)|how (?:did we|do you) get to)\b`)
+	introAskRe       = regexp.MustCompile(`(?i)\b(introduce yourself|intro yourself|who are you|what (can|do) you do|what are you capable of|your capabilities|what can fare do)\b`)
+	greetingOnlyRe   = regexp.MustCompile(`(?i)^(?:@\S+\s+)*(?:hi|hey|hello|yo|sup|what'?s up|help|you there)?[\s!.,?]*$`)
+	atTokenRe        = regexp.MustCompile(`(?i)@\S+`)
+	hotelAskRe       = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay|map|pin)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
+	sendItRe         = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:map|pin|link))|(?:send|show)(?:\s+\w+){0,3}\s+(?:map|pin))\b`)
+	whoPaysRe        = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
+	iPayRe           = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
+	statusAskRe      = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked|which dates|what dates|when (?:are|do) we (?:go|leave|fly|heading))\b`)
+	flightAskRe      = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
+	cheaperAskRe     = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
+	foodMoneyRe      = regexp.MustCompile(`(?i)\b(factor in food|include food|food (?:cost|in (?:that|this|the total))|does that include food|is food (?:in|included)|how (?:did we|do you) get to)\b`)
 	directQuestionRe = regexp.MustCompile(`(?i)^\s*(?:@\S+\s+)*(what|which|where|when|how|who|why|are there|can we|could you|do we)\b`)
 )
 
@@ -583,10 +583,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
 			return nil
 		}
-		if looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text) {
-			return b.handleBookAsk(ctx, trip, m)
-		}
-		return b.plan(ctx, trip, m.Text, m)
+		// No book-ask shortcut here: a brand-new trip has no chosen option yet, so "let's book" /
+		// "sounds good" said during intake can only be answering the current intake question —
+		// runIntakeTurn's own extraction.Approval handles an explicit ✅ at the readiness gate.
+		return b.runIntakeTurn(ctx, trip, m)
 	}
 
 	if trip.State == models.Booked {
@@ -639,7 +639,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 					return err
 				}
 			}
-			return b.plan(ctx, trip, m.Text, m)
+			return b.runIntakeTurn(ctx, trip, m)
 		}
 		return nil
 	}
@@ -656,7 +656,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		}
 	}
 
-	if looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text) {
+	// Scoped to non-Collecting states: during intake there's no chosen option yet, so "let's
+	// book"/"sounds good" phrasing can only be answering the current intake question, not a real
+	// book-ask. runIntakeTurn's own extraction.Approval handles an explicit ✅ at the readiness gate.
+	if trip.State != models.Collecting && (looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text)) {
 		return b.handleBookAsk(ctx, trip, m)
 	}
 
@@ -668,7 +671,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
 			return nil
 		}
-		return b.plan(ctx, trip, m.Text, m)
+		return b.runIntakeTurn(ctx, trip, m)
 	case models.AwaitingChoice, models.AwaitingApproval:
 		return b.onReply(ctx, trip, m)
 	case models.Searching, models.BookingState:
@@ -1119,13 +1122,13 @@ func tripFacts(trip *models.Trip) map[string]any {
 	}
 	if spend := formatting.ComputeSpend(trip); spend.Ok() {
 		facts["locked_spend"] = map[string]any{
-			"flight_round_trip_each_cad": spend.FlightEach,
-			"hotel_group_cad":            spend.HotelGroup,
-			"hotel_each_cad":             spend.HotelEach,
-			"flights_plus_hotel_each_cad": spend.TravelEach,
+			"flight_round_trip_each_cad":   spend.FlightEach,
+			"hotel_group_cad":              spend.HotelGroup,
+			"hotel_each_cad":               spend.HotelEach,
+			"flights_plus_hotel_each_cad":  spend.TravelEach,
 			"flights_plus_hotel_group_cad": spend.TravelGroup,
-			"people":                     spend.People,
-			"includes_food":              false,
+			"people":                       spend.People,
+			"includes_food":                false,
 		}
 		facts["cost_covers"] = "flights_and_hotel_only"
 		facts["price_rule"] = "Use locked_spend only for flight/hotel money. Do not quote trip.cost_per_person or option guesses. Food is extra."
@@ -1798,11 +1801,11 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 			"embarking":       embarkOffer,
 			"returning":       returnOffer,
 		},
-		"hotel":       hotel,
-		"per_person":  preview.PerPerson,
-		"group_total": preview.GroupTotal,
-		"flight_options": offers,
-		"hotel_options":  hotels,
+		"hotel":              hotel,
+		"per_person":         preview.PerPerson,
+		"group_total":        preview.GroupTotal,
+		"flight_options":     offers,
+		"hotel_options":      hotels,
 		"selected_flight_id": offer.OfferID,
 		"selected_hotel_id":  hotel.OfferID,
 		"selection_reason":   selectionReason,
