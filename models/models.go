@@ -65,7 +65,7 @@ type IncomingMessage struct {
 	MessageID    string         `json:"message_id,omitempty"`
 	AgentID      string         `json:"agent_id,omitempty"`
 	Quoted       *QuotedMessage `json:"quoted,omitempty"`
-	CoAskers     []string      `json:"-"` // other people in a batched @mention burst
+	CoAskers     []string       `json:"-"` // other people in a batched @mention burst
 }
 
 // QuotedMessage is the WhatsApp message this inbound line is replying to.
@@ -191,9 +191,9 @@ type Participant struct {
 	OriginAirport        string `json:"origin_airport,omitempty" bson:"origin_airport,omitempty"` // IATA
 	Origin               string `json:"origin,omitempty" bson:"origin,omitempty"`                 // schema: same origin for now; city or IATA
 
-	LegalName            string `json:"legal_name,omitempty" bson:"legal_name,omitempty"`
-	DateOfBirth          string `json:"date_of_birth,omitempty" bson:"date_of_birth,omitempty"` // YYYY-MM-DD
-	PassportNumber       string `json:"passport_number,omitempty" bson:"passport_number,omitempty"`
+	LegalName      string `json:"legal_name,omitempty" bson:"legal_name,omitempty"`
+	DateOfBirth    string `json:"date_of_birth,omitempty" bson:"date_of_birth,omitempty"` // YYYY-MM-DD
+	PassportNumber string `json:"passport_number,omitempty" bson:"passport_number,omitempty"`
 
 	GeneralPreferences       GeneralPreferences       `json:"general_preferences" bson:"general_preferences"`
 	FlightPreferences        FlightPreferences        `json:"flight_preferences" bson:"flight_preferences"`
@@ -285,26 +285,36 @@ type Trip struct {
 	Flights        []Flight        `json:"flights,omitempty" bson:"flights,omitempty"`
 	Accommodations []Accommodation `json:"accommodations,omitempty" bson:"accommodations,omitempty"`
 
-	Itinerary    map[string]any `json:"itinerary,omitempty" bson:"itinerary,omitempty"`
-	ApprovedBy   string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
-	ApprovedAt   *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
+	Itinerary  map[string]any `json:"itinerary,omitempty" bson:"itinerary,omitempty"`
+	ApprovedBy string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
+	ApprovedAt *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
 	// PendingApprover holds the name of whoever voted/said "yes, book it" while no payer was
 	// designated yet. Once a payer is picked, this is used to finish the booking they already approved.
-	PendingApprover string `json:"pending_approver,omitempty" bson:"pending_approver,omitempty"`
-	HistoryStart *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
-	AskedOrigin      bool   `json:"asked_origin" bson:"asked_origin"`
-	AskedDates       bool   `json:"asked_dates" bson:"asked_dates"`
-	AskedPayer       bool   `json:"asked_payer" bson:"asked_payer"`
-	PayerName        string `json:"payer_name,omitempty" bson:"payer_name,omitempty"`
-	Introduced       bool   `json:"introduced" bson:"introduced"`
-	SharedDashboard  bool   `json:"shared_dashboard" bson:"shared_dashboard"`
-	LastPoll         string `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
-	Roster           []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`
-	BudgetNote       string         `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
-	FlightsLocked    bool           `json:"flights_locked" bson:"flights_locked"`
-	PendingChange    *PendingChange `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
-	CreatedAt        time.Time `json:"created_at" bson:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at" bson:"updated_at"`
+	PendingApprover    string              `json:"pending_approver,omitempty" bson:"pending_approver,omitempty"`
+	HistoryStart       *time.Time          `json:"history_start,omitempty" bson:"history_start,omitempty"`
+	AskedOrigin        bool                `json:"asked_origin" bson:"asked_origin"`
+	AskedDates         bool                `json:"asked_dates" bson:"asked_dates"`
+	AskedPayer         bool                `json:"asked_payer" bson:"asked_payer"`
+	PayerName          string              `json:"payer_name,omitempty" bson:"payer_name,omitempty"`
+	Introduced         bool                `json:"introduced" bson:"introduced"`
+	SharedDashboard    bool                `json:"shared_dashboard" bson:"shared_dashboard"`
+	LastPoll           string              `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
+	Roster             []GroupMember       `json:"roster,omitempty" bson:"roster,omitempty"`
+	BudgetNote         string              `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
+	FlightsLocked      bool                `json:"flights_locked" bson:"flights_locked"`
+	PendingChange      *PendingChange      `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
+	PendingTripRequest *PendingTripRequest `json:"pending_trip_request,omitempty" bson:"pending_trip_request,omitempty"`
+	CreatedAt          time.Time           `json:"created_at" bson:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at" bson:"updated_at"`
+}
+
+// PendingTripRequest keeps an ambiguous request until the group chooses whether
+// to change the current trip or start a separate one.
+type PendingTripRequest struct {
+	Text       string    `json:"text" bson:"text"`
+	SenderName string    `json:"sender_name" bson:"sender_name"`
+	SentAt     time.Time `json:"sent_at" bson:"sent_at"`
+	Question   string    `json:"question" bson:"question"`
 }
 
 // PendingChange is a proposed update to already-set trip details. It only applies
@@ -369,19 +379,19 @@ type FlightOffer struct {
 	ReturnStops         *int    `json:"return_stops,omitempty"`
 	ReturnDepartureTime string  `json:"return_departure_time,omitempty"`
 	ReturnArrivalTime   string  `json:"return_arrival_time,omitempty"`
-	Duration      string  `json:"duration,omitempty"`
-	Stops         int     `json:"stops"`
-	DepartureTime string  `json:"departure_time,omitempty"`
-	ArrivalTime   string  `json:"arrival_time,omitempty"`
-	OfferID       string  `json:"offer_id"`
-	Origin        string  `json:"origin"`
-	Destination   string  `json:"destination"`
-	DepartDate    string  `json:"depart_date"`
-	ReturnDate    string  `json:"return_date"`
-	Airline       string  `json:"airline"`
-	Price         float64 `json:"price"`
-	Currency      string  `json:"currency"`
-	Summary       string  `json:"summary"` // "AC 554 dep 08:10, arr 11:35"
+	Duration            string  `json:"duration,omitempty"`
+	Stops               int     `json:"stops"`
+	DepartureTime       string  `json:"departure_time,omitempty"`
+	ArrivalTime         string  `json:"arrival_time,omitempty"`
+	OfferID             string  `json:"offer_id"`
+	Origin              string  `json:"origin"`
+	Destination         string  `json:"destination"`
+	DepartDate          string  `json:"depart_date"`
+	ReturnDate          string  `json:"return_date"`
+	Airline             string  `json:"airline"`
+	Price               float64 `json:"price"`
+	Currency            string  `json:"currency"`
+	Summary             string  `json:"summary"` // "AC 554 dep 08:10, arr 11:35"
 }
 
 // ReturningOffer preserves source/link provenance and uses return details when supplied.
