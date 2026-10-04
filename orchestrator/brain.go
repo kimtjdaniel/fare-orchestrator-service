@@ -54,6 +54,7 @@ var (
 	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked|which dates|what dates|when (?:are|do) we (?:go|leave|fly|heading))\b`)
 	flightAskRe    = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
 	cheaperAskRe   = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
+	foodMoneyRe    = regexp.MustCompile(`(?i)\b(factor in food|include food|food (?:cost|in (?:that|this|the total))|does that include food|is food (?:in|included)|how (?:did we|do you) get to)\b`)
 )
 
 type Brain struct {
@@ -224,6 +225,10 @@ func looksLikeCheaperAsk(text string) bool {
 	return cheaperAskRe.MatchString(text)
 }
 
+func looksLikeFoodMoneyAsk(text string) bool {
+	return foodMoneyRe.MatchString(text)
+}
+
 func looksLikeStatusAsk(text string) bool {
 	return statusAskRe.MatchString(text)
 }
@@ -250,7 +255,7 @@ func quotedText(m models.IncomingMessage) string {
 // wantsHotelMap is only for the current line asking for the stay — never because
 // a quoted bot line happened to mention the hotel or a map.
 func wantsHotelMap(trip *models.Trip, m models.IncomingMessage) bool {
-	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeFoodMoneyAsk(m.Text) {
 		return false
 	}
 	if looksLikeSendIt(m.Text) {
@@ -1012,7 +1017,7 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	if looksLikeItineraryAsk(m.Text) || looksLikeRestaurantAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
-	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeFoodMoneyAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
 	if looksLikeCheaperAsk(m.Text) {
@@ -1031,7 +1036,7 @@ func tripHasLockedFares(trip *models.Trip) bool {
 	if trip == nil {
 		return false
 	}
-	if trip.FlightsLocked || trip.CostPerPerson != nil {
+	if trip.FlightsLocked {
 		return true
 	}
 	if trip.Itinerary != nil {
@@ -1044,26 +1049,38 @@ func tripHasLockedFares(trip *models.Trip) bool {
 
 func tripFacts(trip *models.Trip) map[string]any {
 	facts := map[string]any{
-		"state":                trip.State,
-		"origin":               trip.Origin,
-		"destination":          trip.Destination,
-		"destination_airport":  trip.DestinationAirport,
-		"dates":                []string{trip.EmbarkingDate, trip.ReturningDate},
-		"budget_note_cad":      trip.BudgetNote,
-		"cost_per_person_cad":  trip.CostPerPerson,
-		"cost_covers":          "flights_and_hotel_only",
-		"flights_locked":       trip.FlightsLocked,
-		"duration_nights":      trip.DurationNights,
+		"state":               trip.State,
+		"origin":              trip.Origin,
+		"destination":         trip.Destination,
+		"destination_airport": trip.DestinationAirport,
+		"dates":               []string{trip.EmbarkingDate, trip.ReturningDate},
+		"budget_note_cad":     trip.BudgetNote,
+		"flights_locked":      trip.FlightsLocked,
+		"duration_nights":     trip.DurationNights,
+		"headcount":           len(trip.Participants),
+	}
+	if spend := formatting.ComputeSpend(trip); spend.Ok() {
+		facts["locked_spend"] = map[string]any{
+			"flight_round_trip_each_cad": spend.FlightEach,
+			"hotel_group_cad":            spend.HotelGroup,
+			"hotel_each_cad":             spend.HotelEach,
+			"flights_plus_hotel_each_cad": spend.TravelEach,
+			"flights_plus_hotel_group_cad": spend.TravelGroup,
+			"people":                     spend.People,
+			"includes_food":              false,
+		}
+		facts["cost_covers"] = "flights_and_hotel_only"
+		facts["price_rule"] = "Use locked_spend only for flight/hotel money. Do not quote trip.cost_per_person or option guesses. Food is extra."
 	}
 	if trip.Itinerary != nil {
 		facts["locked"] = map[string]any{
-			"flights":      trip.Itinerary["flights"],
-			"hotel":        trip.Itinerary["hotel"],
-			"restaurants":  trip.Itinerary["restaurants"],
-			"per_person":   trip.Itinerary["per_person"],
-			"group_total":  trip.Itinerary["group_total"],
+			"flights":     trip.Itinerary["flights"],
+			"hotel":       trip.Itinerary["hotel"],
+			"restaurants": trip.Itinerary["restaurants"],
 		}
-		facts["price_rule"] = "Only quote numbers from locked. Option list prices are guesses and must not be used once locked exists. Food CAD on the itinerary is a rough extra, not part of the locked quote."
+		if _, ok := facts["price_rule"]; !ok {
+			facts["price_rule"] = "Only quote numbers from locked_spend. Option list prices are guesses."
+		}
 	} else {
 		guesses := make([]map[string]any, 0, len(trip.Options))
 		for _, o := range trip.Options {
@@ -1102,6 +1119,26 @@ func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.
 }
 
 func (b *Brain) postLockedStatus(ctx context.Context, trip *models.Trip) error {
+	if spend := formatting.ComputeSpend(trip); spend.Ok() {
+		fields := map[string]any{"cost_per_person": spend.TravelEach}
+		itin := trip.Itinerary
+		if itin == nil {
+			itin = map[string]any{}
+		}
+		itin["locked_spend"] = map[string]any{
+			"flight_round_trip_each_cad":   spend.FlightEach,
+			"hotel_group_cad":              spend.HotelGroup,
+			"hotel_each_cad":               spend.HotelEach,
+			"flights_plus_hotel_each_cad":  spend.TravelEach,
+			"flights_plus_hotel_group_cad": spend.TravelGroup,
+			"people":                       spend.People,
+			"includes_food":                false,
+		}
+		fields["itinerary"] = itin
+		if updated, err := b.Store.UpdateTrip(ctx, trip.ID, fields); err == nil && updated != nil {
+			trip = updated
+		}
+	}
 	text := formatting.LockedStatus(trip)
 	if strings.TrimSpace(text) == "" {
 		text = "Nothing is locked yet — I still need a destination and a fare search."
@@ -1141,7 +1178,7 @@ func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.
 
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
 	did := false
-	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
+	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeFoodMoneyAsk(m.Text) {
 		if err := b.postLockedStatus(ctx, trip); err != nil {
 			return true, err
 		}
@@ -1221,8 +1258,9 @@ func foodBudgetHint(trip *models.Trip, days int) string {
 	if strings.TrimSpace(trip.BudgetNote) != "" {
 		lines = append(lines, "Stated group budget note: "+strings.TrimSpace(trip.BudgetNote)+" CAD each.")
 	}
-	if trip.CostPerPerson != nil {
-		lines = append(lines, "Locked flights+hotel: "+formatting.Money(trip.CostPerPerson)+" each.")
+	if spend := formatting.ComputeSpend(trip); spend.Ok() {
+		lines = append(lines, "Locked flights+hotel: "+spend.TotalLine())
+		lines = append(lines, spend.FoodLine())
 	}
 	if days < 1 {
 		days = 7
@@ -1333,9 +1371,6 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		"duration_nights": option.DurationNights,
 		"embarking_date":  option.EmbarkingDate, "returning_date": option.ReturningDate,
 	}
-	if option.CostPerPerson != nil {
-		fields["cost_per_person"] = *option.CostPerPerson
-	}
 	trip, err := b.Store.UpdateTrip(ctx, trip.ID, fields)
 	if err != nil {
 		return err
@@ -1388,13 +1423,23 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	returnOffer.Origin, returnOffer.Destination = offer.Destination, offer.Origin
 
 	itinMap, err := structToMap(map[string]any{
-		"flights":     map[string]any{"embarking": embarkOffer, "returning": returnOffer},
+		"flights": map[string]any{
+			"round_trip_each": offer.Price,
+			"embarking":       embarkOffer,
+			"returning":       returnOffer,
+		},
 		"hotel":       hotel,
 		"per_person":  preview.PerPerson,
 		"group_total": preview.GroupTotal,
 	})
 	if err != nil {
 		return err
+	}
+	keepItineraryExtras(itinMap, trip.Itinerary)
+	each := preview.GroupTotal
+	if spend := formatting.ComputeSpend(&models.Trip{Itinerary: itinMap, Participants: people}); spend.Ok() {
+		each = spend.TravelEach
+		itinMap["group_total"] = spend.TravelGroup
 	}
 
 	ed, _ := models.ParseDate(option.EmbarkingDate)
@@ -1409,13 +1454,6 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		Rating: hotel.Rating, Costs: &hotel.TotalPrice, BookingURL: hotel.CheckoutURL,
 	}}
 
-	each := preview.GroupTotal
-	if n := len(people); n > 0 {
-		each = preview.GroupTotal / float64(n)
-		if p0, ok := preview.PerPerson[people[0].WhatsAppName]; ok {
-			each = p0
-		}
-	}
 	opts := append([]models.Option(nil), trip.Options...)
 	for i := range opts {
 		if opts[i].Position == option.Position {
@@ -1435,6 +1473,17 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	}
 	chosen := trip.ChosenOption()
 	return b.postSummary(ctx, trip, *chosen, itinMap, people)
+}
+
+func keepItineraryExtras(dst, src map[string]any) {
+	if dst == nil || src == nil {
+		return
+	}
+	for _, k := range []string{"restaurants", "advisor"} {
+		if v, ok := src[k]; ok && v != nil {
+			dst[k] = v
+		}
+	}
 }
 
 func destAirportCandidates(airport, dest string) []string {
@@ -1512,7 +1561,11 @@ func (b *Brain) offerCheaperFlights(ctx context.Context, trip *models.Trip, m mo
 	ret := *best
 	ret.Origin, ret.Destination = best.Destination, best.Origin
 	itinMap, err := structToMap(map[string]any{
-		"flights":     map[string]any{"embarking": embark, "returning": ret},
+		"flights": map[string]any{
+			"round_trip_each": best.Price,
+			"embarking":       embark,
+			"returning":       ret,
+		},
 		"hotel":       *hotel,
 		"per_person":  preview.PerPerson,
 		"group_total": preview.GroupTotal,
@@ -1520,12 +1573,11 @@ func (b *Brain) offerCheaperFlights(ctx context.Context, trip *models.Trip, m mo
 	if err != nil {
 		return err
 	}
+	keepItineraryExtras(itinMap, trip.Itinerary)
 	each := preview.GroupTotal
-	if n := len(people); n > 0 {
-		each = preview.GroupTotal / float64(n)
-		if p0, ok := preview.PerPerson[people[0].WhatsAppName]; ok {
-			each = p0
-		}
+	if spend := formatting.ComputeSpend(&models.Trip{Itinerary: itinMap, Participants: people}); spend.Ok() {
+		each = spend.TravelEach
+		itinMap["group_total"] = spend.TravelGroup
 	}
 	opts := append([]models.Option(nil), trip.Options...)
 	for i := range opts {

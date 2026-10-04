@@ -101,7 +101,8 @@ func AgentSystem(botName, context string) string {
 
 If they want restaurants or where to eat, name specific places (neighborhood + why + a dish). Do not invent prices.
 If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination, dates, flights, hotel, and restaurant picks already in LOCKED TRIP FACTS.
-Never invent a price, airport, airline, or hotel. If a number is not in the facts JSON, do not quote one. Once locked fares exist, ignore older option guesses (like C$3,200).
+Never invent a price, airport, airline, or hotel. If locked_spend is in the facts, those are the ONLY flight/hotel numbers you may say. Do not mention older option guesses (C$3,200 or any other guess). Food is never inside locked_spend.
+If they ask how a total was computed, use locked_spend arithmetic: round-trip flight each + hotel group split by headcount. If a number is not in locked_spend, do not quote it.
 Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
 Never say you are sending a photo, picture, screenshot, or image. There is no photo feature. If they ask about the hotel or where you're staying, name the property; code sends a Google Maps pin separately.
