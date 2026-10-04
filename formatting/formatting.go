@@ -5,6 +5,7 @@ package formatting
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"fare-brain/models"
@@ -137,6 +138,66 @@ func ConfirmationMessage(destination, embarkingPNR, returningPNR, hotelRef strin
 	lines = append(lines, "")
 	lines = append(lines, "That's a sandbox booking — nothing actually charged.")
 	return strings.Join(lines, "\n")
+}
+
+func IntroMessage(botName string) string {
+	if strings.TrimSpace(botName) == "" {
+		botName = "Fare"
+	}
+	return botName + ` here — I sit in this chat and help friends actually pick a trip.
+
+I can:
+- gather dates, who flies from where, and a budget
+- propose 2-3 destinations, then quote real fares and a stay
+- write a day-by-day itinerary
+- pick restaurants that match how you eat, with map pins
+- send a Google Maps pin for the hotel
+- keep a locked quote so I don't invent prices
+- ask who's putting the card down and split the rest
+
+Tag me or reply to me. Anytime say "introduce yourself" if you want this recap, "what's locked" for the current quote, or "where should we eat" for dinner spots.`
+}
+
+func RestaurantPlan(planned map[string]any, city string) (string, string) {
+	intro, _ := planned["intro"].(string)
+	var lines []string
+	if strings.TrimSpace(intro) != "" {
+		lines = append(lines, strings.TrimSpace(intro), "")
+	}
+	var mapLines []string
+	places, _ := planned["places"].([]any)
+	for i, raw := range places {
+		p, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := p["name"].(string)
+		hood, _ := p["neighborhood"].(string)
+		why, _ := p["why"].(string)
+		dish, _ := p["dish"].(string)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		head := fmt.Sprintf("%d. %s", i+1, strings.TrimSpace(name))
+		if strings.TrimSpace(hood) != "" {
+			head += " — " + strings.TrimSpace(hood)
+		}
+		lines = append(lines, head)
+		if strings.TrimSpace(why) != "" {
+			lines = append(lines, strings.TrimSpace(why))
+		}
+		if strings.TrimSpace(dish) != "" {
+			lines = append(lines, "Try the "+strings.TrimSpace(dish)+".")
+		}
+		lines = append(lines, "")
+		q := strings.TrimSpace(name + " " + hood + " " + city)
+		mapLines = append(mapLines, name+": https://www.google.com/maps/search/?api=1&query="+url.QueryEscape(q))
+	}
+	maps := ""
+	if len(mapLines) > 0 {
+		maps = "Maps:\n" + strings.Join(mapLines, "\n")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n")), maps
 }
 
 func AdvisorItinerary(planned map[string]any) string {

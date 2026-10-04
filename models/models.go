@@ -286,6 +286,7 @@ type Trip struct {
 	AskedDates       bool   `json:"asked_dates" bson:"asked_dates"`
 	AskedPayer       bool   `json:"asked_payer" bson:"asked_payer"`
 	PayerName        string `json:"payer_name,omitempty" bson:"payer_name,omitempty"`
+	Introduced       bool   `json:"introduced" bson:"introduced"`
 	SharedDashboard  bool   `json:"shared_dashboard" bson:"shared_dashboard"`
 	LastPoll         string `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
 	Roster           []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`

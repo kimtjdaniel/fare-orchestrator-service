@@ -42,7 +42,11 @@ var (
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
 	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
 	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
-	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|what (should|can|do) we do|where to eat|restaurant|neighbourhood|neighborhood|hidden gem|full \d+\s*-?\s*days?|advise|recommend)`)
+	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|full \d+\s*-?\s*days?|neighbourhood|neighborhood|hidden gem)`)
+	restaurantAskRe = regexp.MustCompile(`(?i)\b(restaurants?|where to eat|places to eat|dinner spots?|food recs?|what (should|can|do) we eat|best (pizza|pasta|eats)|wine bars?|trattoria|where (?:are|should) we (?:eat|dine))\b`)
+	introAskRe     = regexp.MustCompile(`(?i)\b(introduce yourself|intro yourself|who are you|what (can|do) you do|what are you capable of|your capabilities|what can fare do)\b`)
+	greetingOnlyRe = regexp.MustCompile(`(?i)^(?:@\S+\s+)*(?:hi|hey|hello|yo|sup|what'?s up|help|you there)?[\s!.,?]*$`)
+	atTokenRe      = regexp.MustCompile(`(?i)@\S+`)
 	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
 	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
 	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
@@ -191,6 +195,20 @@ func looksLikeItineraryAsk(text string) bool {
 	return itineraryAskRe.MatchString(text)
 }
 
+func looksLikeRestaurantAsk(text string) bool {
+	return restaurantAskRe.MatchString(text)
+}
+
+func looksLikeIntroAsk(text string) bool {
+	return introAskRe.MatchString(text)
+}
+
+func looksLikeOnlyGreeting(text string) bool {
+	stripped := strings.TrimSpace(atTokenRe.ReplaceAllString(text, " "))
+	stripped = strings.TrimSpace(stripped)
+	return stripped == "" || greetingOnlyRe.MatchString(stripped)
+}
+
 func looksLikeHotelAsk(text string) bool {
 	return hotelAskRe.MatchString(text)
 }
@@ -239,7 +257,7 @@ func wantsHotelPhoto(trip *models.Trip, m models.IncomingMessage) bool {
 }
 
 func looksLikePrefUpdate(text string, people []models.Participant, roster []models.GroupMember) bool {
-	if looksLikeItineraryAsk(text) {
+	if looksLikeItineraryAsk(text) || looksLikeRestaurantAsk(text) || looksLikeIntroAsk(text) || looksLikeOnlyGreeting(text) {
 		return false
 	}
 	if proxyPrefRe.MatchString(text) {
@@ -345,6 +363,9 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 		return false
 	}
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
+		return false
+	}
+	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) {
 		return false
 	}
 	return true
@@ -474,6 +495,17 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 			return err
 		}
 		b.rememberRoster(ctx, trip, m)
+		trip, err = b.capturePayer(ctx, trip, m)
+		if err != nil {
+			return err
+		}
+		stop, trip, err := b.maybeIntroduce(ctx, trip, m)
+		if err != nil || stop {
+			return err
+		}
+		if m.Tagged && looksLikeRestaurantAsk(m.Text) {
+			return b.writeRestaurantPlan(ctx, trip, m)
+		}
 		if m.Tagged && looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
@@ -486,6 +518,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	if trip.State == models.Booked {
 		if !m.Tagged {
 			return nil
+		}
+		stop, trip, err := b.maybeIntroduce(ctx, trip, m)
+		if err != nil || stop {
+			return err
 		}
 		if handled, err := b.replyToAsks(ctx, trip, m); handled || err != nil {
 			return err
@@ -518,9 +554,16 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	}
 	if trip.State == models.Cancelled {
 		if m.Tagged || looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
-			trip, err = store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
+			trip, err = store.SetState(ctx, b.Store, trip.ID, models.Collecting, map[string]any{"introduced": false})
 			if err != nil {
 				return err
+			}
+			if m.Tagged {
+				var stop bool
+				stop, trip, err = b.maybeIntroduce(ctx, trip, m)
+				if err != nil || stop {
+					return err
+				}
 			}
 			return b.plan(ctx, trip, m.Text, m)
 		}
@@ -531,6 +574,14 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"people", len(trip.Participants), "options", len(trip.Options),
 		"origin", trip.Origin, "dates", hasAnyDates(trip.Participants))
 
+	if m.Tagged {
+		var stop bool
+		stop, trip, err = b.maybeIntroduce(ctx, trip, m)
+		if err != nil || stop {
+			return err
+		}
+	}
+
 	if looksLikeStuck(m.Text) && (m.Tagged || trip.State == models.AwaitingChoice || trip.State == models.AwaitingApproval) {
 		return b.helpDecide(ctx, trip, m)
 	}
@@ -539,7 +590,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if err != nil {
 			return err
 		}
-		if handled && looksLikeItineraryAsk(m.Text) {
+		if handled && looksLikeItineraryAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
 		if handled {
@@ -552,6 +603,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	switch trip.State {
 	case models.Collecting:
+		if m.Tagged && looksLikeRestaurantAsk(m.Text) {
+			return b.writeRestaurantPlan(ctx, trip, m)
+		}
 		if m.Tagged && looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
@@ -920,6 +974,9 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "other" && m.Tagged:
+		if looksLikeRestaurantAsk(m.Text) {
+			return b.writeRestaurantPlan(ctx, trip, m)
+		}
 		if looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
@@ -948,6 +1005,12 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	}
 	if !m.Tagged {
 		return nil, nil // ordinary chatter: saved, but no reply and no LLM spend
+	}
+	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) {
+		return map[string]any{"intent": "other"}, nil
+	}
+	if looksLikeRestaurantAsk(m.Text) {
+		return map[string]any{"intent": "question"}, nil
 	}
 	if looksLikeItineraryAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
@@ -995,10 +1058,11 @@ func tripFacts(trip *models.Trip) map[string]any {
 	}
 	if trip.Itinerary != nil {
 		facts["locked"] = map[string]any{
-			"flights":     trip.Itinerary["flights"],
-			"hotel":       trip.Itinerary["hotel"],
-			"per_person":  trip.Itinerary["per_person"],
-			"group_total": trip.Itinerary["group_total"],
+			"flights":      trip.Itinerary["flights"],
+			"hotel":        trip.Itinerary["hotel"],
+			"restaurants":  trip.Itinerary["restaurants"],
+			"per_person":   trip.Itinerary["per_person"],
+			"group_total":  trip.Itinerary["group_total"],
 		}
 		facts["price_rule"] = "Only quote numbers from locked. Option list prices are guesses and must not be used once locked exists."
 	} else {
@@ -1046,10 +1110,46 @@ func (b *Brain) postLockedStatus(ctx context.Context, trip *models.Trip) error {
 	return b.say(ctx, trip.GroupID, text, nil)
 }
 
+func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, *models.Trip, error) {
+	if trip == nil || !m.Tagged {
+		return false, trip, nil
+	}
+	force := looksLikeIntroAsk(m.Text)
+	if !force && trip.Introduced {
+		return false, trip, nil
+	}
+	if err := b.say(ctx, trip.GroupID, formatting.IntroMessage(b.Config.BotName), nil); err != nil {
+		return true, trip, err
+	}
+	if !trip.Introduced {
+		updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"introduced": true})
+		if err != nil {
+			return true, trip, err
+		}
+		if updated != nil {
+			trip = updated
+		} else {
+			trip.Introduced = true
+		}
+	}
+	onlyIntro := looksLikeIntroAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
+		!looksLikeStatusAsk(m.Text) && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants)
+	if onlyIntro || looksLikeOnlyGreeting(m.Text) {
+		return true, trip, nil
+	}
+	return false, trip, nil
+}
+
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
 	did := false
 	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
 		if err := b.postLockedStatus(ctx, trip); err != nil {
+			return true, err
+		}
+		did = true
+	}
+	if looksLikeRestaurantAsk(m.Text) {
+		if err := b.writeRestaurantPlan(ctx, trip, m); err != nil {
 			return true, err
 		}
 		did = true
@@ -1152,6 +1252,39 @@ func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m 
 		return err
 	}
 	return b.say(ctx, trip.GroupID, text, nil)
+}
+
+func (b *Brain) writeRestaurantPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	dest := tripDestination(trip)
+	if dest == "" {
+		return b.say(ctx, trip.GroupID, "Which city are we eating in? Once I know that I can pick dinner spots.", nil)
+	}
+	factsJSON, _ := json.Marshal(tripFacts(trip))
+	user := fmt.Sprintf("City: %s\nDates: %s\nTastes: %s\nCulinary note: %s\nRequest: %s\n\nLOCKED FACTS:\n%s\n",
+		dest, formatting.Dates(trip.EmbarkingDate, trip.ReturningDate), formatKnownPrefs(trip.Participants),
+		trip.CulinaryDescription, m.Text, string(factsJSON))
+	slog.Info("calling gemini", "stage", "restaurants", "from", m.SenderName, "text", clipLog(m.Text, 80))
+	out, err := b.LLM.Structured(ctx, prompts.RestaurantSystem(b.Config.BotName, dest),
+		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.RestaurantPicks))
+	if err != nil {
+		return err
+	}
+	text, maps := formatting.RestaurantPlan(out, dest)
+	itin := trip.Itinerary
+	if itin == nil {
+		itin = map[string]any{}
+	}
+	itin["restaurants"] = out
+	if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"itinerary": itin}); err != nil {
+		return err
+	}
+	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
+		return err
+	}
+	if maps != "" {
+		return b.say(ctx, trip.GroupID, maps, nil)
+	}
+	return nil
 }
 
 // ------------------------------------------------------------------ stage: search

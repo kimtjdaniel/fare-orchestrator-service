@@ -13,7 +13,7 @@ Talk like a well-travelled friend: contractions, specific, useful. Lead with the
 All prices are Canadian dollars. Write them like C$1,200. Never USD, never a bare $ unless it's C$.
 Price and flights matter, but so do neighborhoods, food, pace, and what the days actually feel like.
 When you address a specific person, @mention them with their exact roster display name, like @Paul Pham. Never use WhatsApp IDs, phone numbers, @c.us, @g.us, or @lid. No emoji, no markdown headers.
-Never paste localhost, dashboard URLs, or any booking/checkout links. If they ask for a hotel or the stay, describe it like a person — the app will send a photo separately.
+Never paste localhost, dashboard URLs, or any booking/checkout links. If they ask for a hotel or a restaurant, describe it like a person — the app will send a Google Maps link separately.
 For a quick reply: 1-3 sentences. For an itinerary or advice: a readable day-by-day layout with blank lines, "Day 1 — ...", morning/afternoon/evening in short lines. No bullet dumps of prices.
 Don't open with "Great question". Ask at most one question, and only if something is actually missing.`
 
@@ -99,7 +99,8 @@ func AgentSystem(botName, context string) string {
 
 %s
 
-If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination, dates, flights, and hotel already in LOCKED TRIP FACTS.
+If they want restaurants or where to eat, name specific places (neighborhood + why + a dish). Do not invent prices.
+If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination, dates, flights, hotel, and restaurant picks already in LOCKED TRIP FACTS.
 Never invent a price, airport, airline, or hotel. If a number is not in the facts JSON, do not quote one. Once locked fares exist, ignore older option guesses (like C$3,200).
 Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
@@ -116,8 +117,16 @@ Write a day-by-day trip itinerary as JSON for WhatsApp.
 Use the destination, dates, duration, tastes, and LOCKED FACTS already on the trip.
 Day 1 arrival city/airport must match the inbound flight in locked facts. Do not invent a different airport or fare.
 Do NOT invent prices. Do not write a brochure greeting ("thrilled to present"). Mix food, walking, one slower afternoon.
-Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Specific names when you know them.
+Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Evening should name a real restaurant that fits how this group eats.
 intro: one warm sentence. You may @mention a chatter with their roster name if needed. Never WhatsApp IDs. No emoji, no markdown.`, botName, today)
+}
+
+func RestaurantSystem(botName, city string) string {
+	return fmt.Sprintf(`You are %s, picking restaurants for a WhatsApp group going to %s.
+
+Return JSON of 4-6 places. Mix a cheap casual, a standout dinner, a lunch, and something local.
+Use the culinary tastes in the request if present. Specific names, neighborhoods, one signature dish, why it fits.
+Do not invent prices, URLs, or phone numbers. No emoji, no markdown, no brochure voice.`, botName, city)
 }
 
 // ---------------- output schemas ----------------
@@ -271,6 +280,32 @@ var DayItinerary = map[string]any{
 			},
 		},
 		"required":             []string{"intro", "days"},
+		"additionalProperties": false,
+	},
+}
+
+var RestaurantPicks = map[string]any{
+	"name": "restaurant_picks",
+	"schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"intro": map[string]any{"type": "string"},
+			"places": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name":         map[string]any{"type": "string"},
+						"neighborhood": map[string]any{"type": "string"},
+						"why":          map[string]any{"type": "string"},
+						"dish":         map[string]any{"type": "string"},
+					},
+					"required":             []string{"name", "neighborhood", "why"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"intro", "places"},
 		"additionalProperties": false,
 	},
 }
