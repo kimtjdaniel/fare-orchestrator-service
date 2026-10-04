@@ -116,6 +116,7 @@ func main() {
 	mux.HandleFunc("GET /dashboard/trips/{gid}", getDashboardTripHandler(brain))
 	mux.HandleFunc("POST /dashboard/trips/{gid}", postDashboardActHandler(brain))
 	mux.HandleFunc("POST /groups/{gid}/sessions/{sid}/retry-flight", retryFlightHandler(brain))
+	mux.HandleFunc("POST /groups/{gid}/sessions/{sid}/skip-flight", skipFlightHandler(brain))
 	mux.HandleFunc("PUT /sessions/whatsapp", putWhatsAppSessionHandler(st))
 	mux.HandleFunc("GET /sessions/whatsapp", getWhatsAppSessionHandler(st))
 
@@ -462,6 +463,20 @@ func postDashboardActHandler(brain *orchestrator.Brain) http.HandlerFunc {
 		}
 		view, err := brain.DashboardAct(r.Context(), r.PathValue("gid"), body)
 		writeDash(w, err, view)
+	}
+}
+
+func skipFlightHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := brain.SkipFlights(r.Context(), r.PathValue("gid")); err != nil {
+			status := http.StatusBadRequest
+			if dash, ok := err.(*orchestrator.DashboardError); ok && dash.Status != 0 {
+				status = dash.Status
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]string{"status": "skipping"})
 	}
 }
 
