@@ -198,11 +198,21 @@ func (m *Manager) publishLocked(ctx context.Context, id string, g *group, s *Sna
 func (m *Manager) Begin(ctx context.Context, t *models.Trip) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.beginLocked(ctx, t, false)
+}
+
+func (m *Manager) BeginLive(ctx context.Context, t *models.Trip) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.beginLocked(ctx, t, true)
+}
+
+func (m *Manager) beginLocked(ctx context.Context, t *models.Trip, fresh bool) (string, error) {
 	g, err := m.load(ctx, t.GroupID)
 	if err != nil {
 		return "", err
 	}
-	if len(g.Sessions) > 0 {
+	if !fresh && len(g.Sessions) > 0 {
 		s := g.Sessions[0]
 		if s.Session.Status != "failed" && s.Session.Status != "completed" {
 			syncSession(&s.Session, t)

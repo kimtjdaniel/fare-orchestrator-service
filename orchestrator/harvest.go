@@ -17,7 +17,7 @@ var (
 	monthDate = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*[–\-to]+\s*(\d{1,2})(?:st|nd|rd|th)?)?`)
 	dateSpanRe = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|through|until|–|-)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?`)
 	nightsRe  = regexp.MustCompile(`(?i)\b(\d{1,2})\s*-?\s*(?:days?|nights?)\b`)
-	destToRe  = regexp.MustCompile(`(?i)\b(?:destination(?:\s+to)?|going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
+	destToRe  = regexp.MustCompile(`(?i)\b(?:going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
 	tripPlaceRe = regexp.MustCompile(`(?i)\b(?:plan|book|arrange)\s+(?:a\s+|an\s+)?(?:\d{1,2}\s*-?\s*(?:night|day)s?\s+)?([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+trip\b`)
 	insteadToRe = regexp.MustCompile(`(?i)\b(?:to|for)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+instead\b`)
 	budgetRe  = regexp.MustCompile(`(?i)(?:c\$|cad\s*\$?|\$)\s*([\d,]+)|budget[^\d]{0,12}([\d,]+)`)
@@ -333,6 +333,9 @@ func cleanPlaceName(raw string) string {
 	skip := map[string]bool{
 		"the": true, "our": true, "this": true, "that": true, "instead": true,
 		"dates": true, "date": true, "budget": true, "origin": true, "flight": true, "flights": true,
+		"option": true, "options": true, "search": true, "stay": true, "hotel": true, "hotels": true,
+		"vibe": true, "trip": true, "city": true, "cities": true, "group": true, "everyone": true,
+		"pricing": true, "price": true, "fare": true, "fares": true, "place": true, "places": true,
 	}
 	if skip[low] {
 		return ""
