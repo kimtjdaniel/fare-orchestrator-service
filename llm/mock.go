@@ -9,16 +9,17 @@ import (
 )
 
 var (
-	approveRe    = regexp.MustCompile(`(?i)✅|👍|\b(yes|yep|approve|book it|do it|go)\b`)
-	rejectRe     = regexp.MustCompile(`(?i)❌|👎|\b(no|nope|reject)\b`)
-	cancelRe     = regexp.MustCompile(`(?i)\b(cancel|start over|never ?mind)\b`)
-	reviseRe     = regexp.MustCompile(`(?i)\b(cheaper|instead|swap|change|different)\b`)
-	numberRe     = regexp.MustCompile(`\b([1-3])\b`)
-	startTripRe  = regexp.MustCompile(`(?i)\bplan (a|the) trip\b|\bwhere should we go\b`)
-	dateRangeRe  = regexp.MustCompile(`(\d{4}-\d{2}-\d{2})\s*(?:to|\.\.)\s*(\d{4}-\d{2}-\d{2})`)
-	nightsRe     = regexp.MustCompile(`(\d+)\s*nights?`)
-	includesRe   = regexp.MustCompile(`(?i)flights?(?:\s*\+|\s+and\s+|,)\s*(?:stay|hotel)`)
-	noneConstrRe = regexp.MustCompile(`(?i)^\s*none\s*\.?\s*$`)
+	approveRe      = regexp.MustCompile(`(?i)✅|👍|\b(yes|yep|approve|book it|do it|go)\b`)
+	rejectRe       = regexp.MustCompile(`(?i)❌|👎|\b(no|nope|reject)\b`)
+	cancelRe       = regexp.MustCompile(`(?i)\b(cancel|start over|never ?mind)\b`)
+	reviseRe       = regexp.MustCompile(`(?i)\b(cheaper|instead|swap|change|different)\b`)
+	numberRe       = regexp.MustCompile(`\b([1-3])\b`)
+	startTripRe    = regexp.MustCompile(`(?i)\bplan (a|the) trip\b|\bwhere should we go\b`)
+	dateRangeRe    = regexp.MustCompile(`(\d{4}-\d{2}-\d{2})\s*(?:to|\.\.)\s*(\d{4}-\d{2}-\d{2})`)
+	nightsRe       = regexp.MustCompile(`(\d+)\s*nights?`)
+	includesRe     = regexp.MustCompile(`(?i)flights?(?:\s*\+|\s+and\s+|,)\s*(?:stay|hotel)`)
+	noneConstrRe   = regexp.MustCompile(`(?i)^\s*none\s*\.?\s*$`)
+	routeNewTripRe = regexp.MustCompile(`(?i)\b(?:(?:plan|organize)\s+(?:a|an|another|new|separate)\s+(?:[\p{L}\p{N}-]+\s+){0,6}(?:trip|vacation|holiday)|(?:start|create|plan)\s+(?:a\s+)?(?:new|another|separate)\s+(?:trip|vacation|holiday|(?:planning\s+)?session)|(?:start|create)\s+(?:a|an)\s+(?:trip|vacation|holiday|(?:planning\s+)?session))\b`)
 )
 
 // MockLLM is a deterministic stand-in for Gemini. It classifies replies and basic trip routing
