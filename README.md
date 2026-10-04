@@ -394,22 +394,23 @@ multi-source hotel search for Airbnb offers and recordings to appear.
 
 ## Flight sources
 
-The flight search service can return Google Flights and Trip.com fares in the same
-`flights` list, with at most eight per website across the requested origins.
-`FlightOffer.source` identifies the provider (`google_flights` or `trip_com`);
-legacy rows without a source use `google_flights`. Optional `return_duration`,
-`return_stops`, `return_departure_time`, and `return_arrival_time` preserve
-Trip.com's return-leg details. `booking_url` remains optional; the Trip.com adapter
-does not provide a verified reusable booking link. Saved historical `kayak` offers
-keep their original source; old results are not relabeled as Trip.com.
-The selected itinerary and stored flight legs retain source/link provenance;
-the dashboard's chosen plan exposes `flightSource`. Gemini compares supplied
-offers from both sites and selects their existing unique offer IDs.
+Current flight searches use Google Flights only and return up to 15 cheapest
+fares across the requested origins in the existing `flights` list. The
+orchestrator accepts the entire returned list; it does not impose an eight-offer
+cap. `FlightOffer.source` identifies the provider, and legacy rows without a
+source use `google_flights`.
+
+Saved historical `trip_com` and `kayak` offers retain their original source and
+optional `booking_url`, `return_duration`, `return_stops`,
+`return_departure_time`, and `return_arrival_time` fields. These details are not
+guaranteed on new Google Flights offers. The selected itinerary and stored flight
+legs retain source/link provenance; the dashboard's chosen plan exposes
+`flightSource`. Gemini selects from the supplied unique offer IDs.
 
 Recording events retain all airport/source pairs under `sources`, including
 their separate archive/replay links, errors, partial status, `warning`, and
 `resultsComplete`. The legacy single recording link remains available.
-The new dual-source implementation requires deploying the updated flight Lambda;
+The Google-only, 15-fare search requires deploying the updated flight Lambda;
 existing service URLs and callback endpoints stay the same.
 
 ## Deployed live browser previews
@@ -434,8 +435,8 @@ across replicas and callback recovery after a process restart are unsupported.
 
 Browser previews use `website:origin` keys when both fields differ, or the website
 (or origin) alone otherwise, and preserve both metadata fields. This keeps
-Google Flights and Trip.com previews separate for the same departure airport,
-and Booking.com and Airbnb separate for the same stay. Frontend support for
+Google Flights previews separate by departure airport and Booking.com and Airbnb
+separate for the same stay; saved historical providers keep their own keys. Frontend support for
 these source keys and Lambda support for progress callbacks must also be deployed.
 
 A backend Git push alone does not configure its public URL. Without
