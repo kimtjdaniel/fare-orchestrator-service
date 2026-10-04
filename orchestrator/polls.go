@@ -59,11 +59,13 @@ func (b *Brain) tripPageURL(ctx context.Context, trip *models.Trip) string {
 	if gid == "" {
 		gid = strings.TrimSpace(trip.ID)
 	}
+	gid = models.CanonicalGroupID(gid)
 	sid := ""
 	if b.Dashboard != nil {
-		sid, _ = b.Dashboard.CurrentID(ctx, gid)
-		if sid == "" {
-			sid, _ = b.Dashboard.Begin(ctx, trip)
+		if id, err := b.Dashboard.Begin(ctx, trip); err == nil {
+			sid = id
+		} else {
+			sid, _ = b.Dashboard.CurrentID(ctx, gid)
 		}
 	}
 	return formatting.SessionLink(base, gid, sid)

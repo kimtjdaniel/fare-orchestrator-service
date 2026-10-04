@@ -58,7 +58,8 @@ func dashboardBase(dashboardURL string) string {
 
 func DashboardLink(dashboardURL, groupID string) string {
 	base := dashboardBase(dashboardURL)
-	groupID = models.GroupPathID(groupID)
+	// Path-escape @ so WhatsApp does not treat the JID as a mention and strip it.
+	groupID = models.CanonicalGroupID(groupID)
 	if base == "" || groupID == "" {
 		return ""
 	}
