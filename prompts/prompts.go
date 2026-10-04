@@ -116,9 +116,10 @@ Today's date is %s.
 Write a day-by-day trip itinerary as JSON for WhatsApp.
 Use the destination, dates, duration, tastes, and LOCKED FACTS already on the trip.
 Day 1 arrival city/airport must match the inbound flight in locked facts. Do not invent a different airport or fare.
-Do NOT invent prices. Do not write a brochure greeting ("thrilled to present"). Mix food, walking, one slower afternoon.
-Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Evening should name a real restaurant that fits how this group eats.
-intro: one warm sentence. You may @mention a chatter with their roster name if needed. Never WhatsApp IDs. No emoji, no markdown.`, botName, today)
+Do NOT invent flight or hotel prices. Food spend is the exception: fill food_per_day_cad and food_trip_cad as rough CAD per person (lunch + dinner, not booked). Match the city's vibe and any stated budget note; food sits on top of the locked flights+hotel quote.
+Do not write a brochure greeting ("thrilled to present"). Mix food, walking, one slower afternoon.
+Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Evening should name a real restaurant that fits how this group eats. You may mention a rough meal CAD in the day body.
+intro: one warm sentence. food_note: one line on food spend. You may @mention a chatter with their roster name if needed. Never WhatsApp IDs. No emoji, no markdown.`, botName, today)
 }
 
 func RestaurantSystem(botName, city string) string {
@@ -126,7 +127,7 @@ func RestaurantSystem(botName, city string) string {
 
 Return JSON of 4-6 places. Mix a cheap casual, a standout dinner, a lunch, and something local.
 Use the culinary tastes in the request if present. Specific names, neighborhoods, one signature dish, why it fits.
-Do not invent prices, URLs, or phone numbers. No emoji, no markdown, no brochure voice.`, botName, city)
+est_cad: rough CAD per person for that meal (not booked). Do not invent flight/hotel prices, URLs, or phone numbers. No emoji, no markdown, no brochure voice.`, botName, city)
 }
 
 // ---------------- output schemas ----------------
@@ -265,14 +266,18 @@ var DayItinerary = map[string]any{
 	"schema": map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"intro": map[string]any{"type": "string"},
+			"intro":              map[string]any{"type": "string"},
+			"food_note":          map[string]any{"type": "string", "description": "One line: rough food spend per person in CAD. Not booked."},
+			"food_per_day_cad":   map[string]any{"type": "number", "description": "Rough CAD per person per day for meals."},
+			"food_trip_cad":      map[string]any{"type": "number", "description": "Rough CAD per person for the whole trip's meals."},
 			"days": map[string]any{
 				"type": "array",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"title": map[string]any{"type": "string", "description": "e.g. Day 1 — landing and the old town"},
-						"body":  map[string]any{"type": "string", "description": "Morning / afternoon / evening in a few sentences."},
+						"title":    map[string]any{"type": "string", "description": "e.g. Day 1 — landing and the old town"},
+						"body":     map[string]any{"type": "string", "description": "Morning / afternoon / evening in a few sentences."},
+						"food_cad": map[string]any{"type": "number", "description": "Optional rough CAD for that day's meals per person."},
 					},
 					"required":             []string{"title", "body"},
 					"additionalProperties": false,
@@ -299,6 +304,7 @@ var RestaurantPicks = map[string]any{
 						"neighborhood": map[string]any{"type": "string"},
 						"why":          map[string]any{"type": "string"},
 						"dish":         map[string]any{"type": "string"},
+						"est_cad":      map[string]any{"type": "number", "description": "Rough CAD per person for this meal, not booked."},
 					},
 					"required":             []string{"name", "neighborhood", "why"},
 					"additionalProperties": false,

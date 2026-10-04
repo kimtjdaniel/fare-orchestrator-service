@@ -1049,7 +1049,9 @@ func tripFacts(trip *models.Trip) map[string]any {
 		"destination":          trip.Destination,
 		"destination_airport":  trip.DestinationAirport,
 		"dates":                []string{trip.EmbarkingDate, trip.ReturningDate},
+		"budget_note_cad":      trip.BudgetNote,
 		"cost_per_person_cad":  trip.CostPerPerson,
+		"cost_covers":          "flights_and_hotel_only",
 		"flights_locked":       trip.FlightsLocked,
 		"duration_nights":      trip.DurationNights,
 	}
@@ -1061,7 +1063,7 @@ func tripFacts(trip *models.Trip) map[string]any {
 			"per_person":   trip.Itinerary["per_person"],
 			"group_total":  trip.Itinerary["group_total"],
 		}
-		facts["price_rule"] = "Only quote numbers from locked. Option list prices are guesses and must not be used once locked exists."
+		facts["price_rule"] = "Only quote numbers from locked. Option list prices are guesses and must not be used once locked exists. Food CAD on the itinerary is a rough extra, not part of the locked quote."
 	} else {
 		guesses := make([]map[string]any, 0, len(trip.Options))
 		for _, o := range trip.Options {
@@ -1213,6 +1215,22 @@ func tripNights(trip *models.Trip, asked string) int {
 	return 7
 }
 
+func foodBudgetHint(trip *models.Trip, days int) string {
+	var lines []string
+	lines = append(lines, "Budget on this trip is one general CAD figure, not flight/hotel/food categories. The locked quote is flights + hotel only.")
+	if strings.TrimSpace(trip.BudgetNote) != "" {
+		lines = append(lines, "Stated group budget note: "+strings.TrimSpace(trip.BudgetNote)+" CAD each.")
+	}
+	if trip.CostPerPerson != nil {
+		lines = append(lines, "Locked flights+hotel: "+formatting.Money(trip.CostPerPerson)+" each.")
+	}
+	if days < 1 {
+		days = 7
+	}
+	lines = append(lines, fmt.Sprintf("Estimate meals for %d days in CAD per person. Food is itinerary-only, rough, not booked.", days))
+	return strings.Join(lines, "\n")
+}
+
 func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	dest := tripDestination(trip)
 	if dest == "" {
@@ -1231,8 +1249,8 @@ func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m 
 		dates = formatting.Dates(trip.EmbarkingDate, trip.ReturningDate)
 	}
 	factsJSON, _ := json.Marshal(tripFacts(trip))
-	user := fmt.Sprintf("City: %s\nDays: %d\nDates: %s\nOrigin: %s\nTastes: %s\nRequest: %s\n\nLOCKED FACTS:\n%s\n\nDay 1 arrival must match the inbound flight airport in locked facts. Do not invent fares, hotels, or airports.\n",
-		dest, days, dates, trip.Origin, formatKnownPrefs(trip.Participants), m.Text, string(factsJSON))
+	user := fmt.Sprintf("City: %s\nDays: %d\nDates: %s\nOrigin: %s\nTastes: %s\nRequest: %s\n\n%s\nLOCKED FACTS:\n%s\n\nDay 1 arrival must match the inbound flight airport in locked facts. Do not invent fares, hotels, or airports. Do estimate meal CAD for itinerary only.\n",
+		dest, days, dates, trip.Origin, formatKnownPrefs(trip.Participants), m.Text, foodBudgetHint(trip, days), string(factsJSON))
 	slog.Info("calling gemini", "stage", "itinerary", "from", m.SenderName, "text", clipLog(m.Text, 80))
 	out, err := b.LLM.Structured(ctx, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")),
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
@@ -1264,9 +1282,9 @@ func (b *Brain) writeRestaurantPlan(ctx context.Context, trip *models.Trip, m mo
 		return b.say(ctx, trip.GroupID, "Which city are we eating in? Once I know that I can pick dinner spots.", nil)
 	}
 	factsJSON, _ := json.Marshal(tripFacts(trip))
-	user := fmt.Sprintf("City: %s\nDates: %s\nTastes: %s\nCulinary note: %s\nRequest: %s\n\nLOCKED FACTS:\n%s\n",
+	user := fmt.Sprintf("City: %s\nDates: %s\nTastes: %s\nCulinary note: %s\nRequest: %s\n\n%s\nLOCKED FACTS:\n%s\n",
 		dest, formatting.Dates(trip.EmbarkingDate, trip.ReturningDate), formatKnownPrefs(trip.Participants),
-		trip.CulinaryDescription, m.Text, string(factsJSON))
+		trip.CulinaryDescription, m.Text, foodBudgetHint(trip, tripNights(trip, m.Text)), string(factsJSON))
 	slog.Info("calling gemini", "stage", "restaurants", "from", m.SenderName, "text", clipLog(m.Text, 80))
 	out, err := b.LLM.Structured(ctx, prompts.RestaurantSystem(b.Config.BotName, dest),
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.RestaurantPicks))

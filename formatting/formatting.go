@@ -189,6 +189,9 @@ func RestaurantPlan(planned map[string]any, city string) (string, string) {
 		if strings.TrimSpace(dish) != "" {
 			lines = append(lines, "Try the "+strings.TrimSpace(dish)+".")
 		}
+		if n := toFloatPtr(p["est_cad"]); n != nil {
+			lines = append(lines, "About "+Money(n)+" a person (rough).")
+		}
 		lines = append(lines, "")
 		q := strings.TrimSpace(name + " " + hood + " " + city)
 		mapLines = append(mapLines, name+": https://www.google.com/maps/search/?api=1&query="+url.QueryEscape(q))
@@ -221,7 +224,25 @@ func AdvisorItinerary(planned map[string]any) string {
 		if strings.TrimSpace(body) != "" {
 			lines = append(lines, strings.TrimSpace(body))
 		}
+		if n := toFloatPtr(d["food_cad"]); n != nil {
+			lines = append(lines, "Meals about "+Money(n)+" each (rough, not booked).")
+		}
 		lines = append(lines, "")
+	}
+	foodNote, _ := planned["food_note"].(string)
+	dayFood := toFloatPtr(planned["food_per_day_cad"])
+	tripFood := toFloatPtr(planned["food_trip_cad"])
+	if strings.TrimSpace(foodNote) != "" || dayFood != nil || tripFood != nil {
+		lines = append(lines, "Food (rough, not booked):")
+		if strings.TrimSpace(foodNote) != "" {
+			lines = append(lines, strings.TrimSpace(foodNote))
+		}
+		if dayFood != nil {
+			lines = append(lines, "About "+Money(dayFood)+" per person per day.")
+		}
+		if tripFood != nil {
+			lines = append(lines, "About "+Money(tripFood)+" per person for the whole trip's meals.")
+		}
 	}
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
