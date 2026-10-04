@@ -27,6 +27,7 @@ import (
 	"fare-brain/models"
 	"fare-brain/orchestrator"
 	"fare-brain/store"
+	"fare-brain/tools"
 )
 
 func main() {
@@ -102,6 +103,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	dashboardEvents.Register(mux)
+	mux.HandleFunc("POST /travel-search/results/{requestID}", tools.SearchResultsHandler)
 	mux.HandleFunc("GET /health", healthHandler(cfg))
 	mux.HandleFunc("POST /webhook", webhookHandler(brain))
 	mux.HandleFunc("POST /telegram/webhook", telegramWebhookHandler(cfg, brain))

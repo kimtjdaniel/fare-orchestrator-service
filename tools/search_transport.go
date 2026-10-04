@@ -45,7 +45,14 @@ func forwardSearch(ctx context.Context, agent string, event map[string]any) {
 		events.emit(agent+"_search.progress", map[string]any{"message": message})
 	}
 }
-func runSearchService(ctx context.Context, cfg *config.Settings, agent string, request map[string]any) (map[string]any, error) {
+func runSearchService(ctx context.Context, cfg *config.Settings, agent string, request map[string]any) (result map[string]any, resultErr error) {
+	defer func() {
+		if result != nil {
+			if events, ok := ctx.Value(searchEventsKey{}).(searchEvents); ok && events.emit != nil {
+				events.emit(agent+"_search.recording.completed", map[string]any{"agentType": agent, "searchId": result["search_id"], "recordingUrl": result["recording_url"], "recordingError": result["recording_error"], "deliveryError": result["delivery_error"]})
+			}
+		}
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 	defer cancel()
 	endpoint, socketURL := cfg.FlightServiceURL, cfg.FlightServiceWSURL
@@ -55,6 +62,47 @@ func runSearchService(ctx context.Context, cfg *config.Settings, agent string, r
 	if socketURL != "" {
 		return runSearchSocket(ctx, cfg, agent, socketURL, request)
 	}
+	var callback <-chan map[string]any
+	if cfg.OrchestratorPublicURL != "" {
+		id, results := registerSearchCallback(agent, searchRecordText(request["session_id"]))
+		callback = results
+		request["callback_url"] = cfg.OrchestratorPublicURL + "/travel-search/results/" + id
+	}
+	type response struct {
+		result map[string]any
+		err    error
+	}
+	done := make(chan response, 1)
+	go func() {
+		result, err := runSearchHTTP(ctx, agent, endpoint, request)
+		done <- response{result, err}
+	}()
+	select {
+	case result := <-callback:
+		return validateSearchResult(agent, result)
+	case response := <-done:
+		// A callback can arrive just before the HTTP response (or its connection error).
+		select {
+		case result := <-callback:
+			return validateSearchResult(agent, result)
+		default:
+		}
+		if response.err == nil || response.result != nil || callback == nil {
+			return response.result, response.err
+		}
+		// A dropped synchronous connection does not imply Lambda stopped running.
+		select {
+		case result := <-callback:
+			return validateSearchResult(agent, result)
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%s search callback did not arrive: %w", agent, response.err)
+		}
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func runSearchHTTP(ctx context.Context, agent, endpoint string, request map[string]any) (map[string]any, error) {
 	raw, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
@@ -74,10 +122,11 @@ func runSearchService(ctx context.Context, cfg *config.Settings, agent string, r
 		return nil, fmt.Errorf("%s service returned invalid JSON", agent)
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, serviceError(agent, result)
+		return result, serviceError(agent, result)
 	}
 	return validateSearchResult(agent, result)
 }
+
 func runSearchSocket(ctx context.Context, cfg *config.Settings, agent, url string, request map[string]any) (map[string]any, error) {
 	headers := http.Header{}
 	headers.Set("Origin", cfg.SearchFrontendOrigin)
@@ -141,7 +190,7 @@ func serviceError(agent string, result map[string]any) error {
 func validateSearchResult(agent string, result map[string]any) (map[string]any, error) {
 	status, _ := result["status"].(string)
 	if status != "complete" && status != "partially_complete" {
-		return nil, serviceError(agent, result)
+		return result, serviceError(agent, result)
 	}
 	return result, nil
 }

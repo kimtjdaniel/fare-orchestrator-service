@@ -33,6 +33,7 @@ type Activity struct {
 	Message   string    `json:"message"`
 }
 type Snapshot struct {
+	Recordings    map[string]map[string]any            `json:"recordings,omitempty"`
 	Session       Session                              `json:"session"`
 	Revision      uint64                               `json:"revision"`
 	Flight        string                               `json:"flight"`
@@ -269,6 +270,16 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		if msg, ok := payload["message"].(string); ok {
 			s.HotelMessage = msg
 		}
+	case "flight_search.failed":
+		s.Flight = "failed"
+		if msg, ok := payload["message"].(string); ok {
+			s.FlightMessage = msg
+		}
+	case "hotel_search.failed":
+		s.Hotel = "failed"
+		if msg, ok := payload["message"].(string); ok {
+			s.HotelMessage = msg
+		}
 	case "flight_search.completed":
 		s.Flight = "completed"
 		if rows, ok := payload["flights"].([]map[string]any); ok {
@@ -281,6 +292,12 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 			s.Hotels = rows
 		}
 		s.HotelMessage = fmt.Sprintf("Found %d stays", len(s.Hotels))
+	case "flight_search.recording.completed", "hotel_search.recording.completed":
+		if s.Recordings == nil {
+			s.Recordings = map[string]map[string]any{}
+		}
+		agent, _ := payload["agentType"].(string)
+		s.Recordings[agent] = payload
 	case "planning.started":
 		s.Planning = "running"
 		s.Session.Status = "planning"

@@ -54,9 +54,6 @@ func dashboardHotels(offers []models.HotelOffer, adults int, mock bool) []map[st
 	return rows
 }
 func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight models.FlightOffer, hotel models.HotelOffer) error {
-	if b.Dashboard == nil {
-		return nil
-	}
 	if err := b.dashboardTask(ctx, t, "group-budget", "completed", "Calculated the per-person flight and hotel costs"); err != nil {
 		return err
 	}
@@ -64,7 +61,12 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 		return err
 	}
 	facts, _ := json.Marshal(tripFacts(t))
+	selected, err := json.Marshal(map[string]any{"flight": flight, "hotel": hotel, "selection_reason": t.Itinerary["selection_reason"], "per_person": t.Itinerary["per_person"]})
+	if err != nil {
+		return err
+	}
 	user := fmt.Sprintf("Destination: %s\nStart date: %s\nEnd date: %s\nDays: %d\nGroup preferences: %s\nBudget note: %s\nLOCKED FACTS: %s\nInclude local timed activities from 08:00 to 21:00 for each full day, leaving sensible free time and respecting arrival timing. Do not invent travel prices.", t.Destination, t.EmbarkingDate, t.ReturningDate, t.DurationNights, formatKnownPrefs(t.Participants), t.BudgetNote, string(facts))
+	user += "\nSelected travel plan: " + string(selected) + "\nBuild activities around these selected offers and the group's interests. Account for flight arrival, hotel check-in, transfers and departure. Include every date through the return date, using partial schedules on travel days. Activity suggestions are estimates, not confirmed bookings or verified opening hours."
 	out, err := b.LLM.Structured(ctx, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")), []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
 	if err != nil {
 		return err
@@ -91,7 +93,7 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 		guests = 1
 	}
 	explanation, _ := out["intro"].(string)
-	plan := map[string]any{"flight": flight.Airline, "route": flight.Origin + " → " + flight.Destination, "flightPrice": flight.Price, "hotel": hotel.Name, "nights": t.DurationNights, "hotelPrice": hotel.TotalPrice / float64(guests), "explanation": explanation, "days": days, "isSampleSchedule": b.Config.MockLLM}
+	plan := map[string]any{"flight": flight.Airline, "route": flight.Origin + " → " + flight.Destination, "flightPrice": flight.Price, "hotel": hotel.Name, "nights": t.DurationNights, "hotelPrice": hotel.TotalPrice / float64(guests), "explanation": explanation, "selectionReason": t.Itinerary["selection_reason"], "flightOfferId": flight.OfferID, "hotelOfferId": hotel.OfferID, "days": days, "isSampleSchedule": b.Config.MockLLM}
 	itinerary := map[string]any{}
 	for key, value := range t.Itinerary {
 		itinerary[key] = value
@@ -130,6 +132,9 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 			return
 		}
 		flights, flightErr = tools.SearchFlights(ctx, b.Config, origin, option.DestinationAirport, option.EmbarkingDate, option.ReturningDate)
+		if flightErr != nil {
+			_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": flightErr.Error()})
+		}
 		if flightErr == nil && len(flights) > 0 {
 			flightErr = b.dashboardEvent(ctx, t, "flight_search.completed", map[string]any{"flights": dashboardFlights(flights), "message": fmt.Sprintf("Found %d flight options", len(flights))})
 		}
@@ -141,6 +146,9 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 			return
 		}
 		hotels, hotelErr = tools.SearchHotels(ctx, b.Config, option.Destination, option.EmbarkingDate, option.ReturningDate, len(t.Participants), nil)
+		if hotelErr != nil {
+			_ = b.dashboardEvent(ctx, t, "hotel_search.failed", map[string]any{"message": hotelErr.Error()})
+		}
 		if hotelErr == nil && len(hotels) > 0 {
 			hotelErr = b.dashboardEvent(ctx, t, "hotel_search.completed", map[string]any{"hotels": dashboardHotels(hotels, len(t.Participants), b.Config.MockTravel), "message": fmt.Sprintf("Found %d stays", len(hotels))})
 		}

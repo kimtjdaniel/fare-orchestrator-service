@@ -197,7 +197,7 @@ func (g *GeminiLLM) Structured(ctx context.Context, system string, messages []Me
 		"generationConfig": map[string]any{
 			"responseMimeType": "application/json",
 			"responseSchema":   toGeminiSchema(schema.Schema),
-			"maxOutputTokens":  2048,
+			"maxOutputTokens":  8192,
 		},
 	})
 	if err != nil {

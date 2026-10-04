@@ -43,6 +43,7 @@ var (
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
 	proxyPrefRe    = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
 	prefFactRe     = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
+	tripPlanRe     = regexp.MustCompile(`(?i)\b(?:plan|replan)\s+[^.!?\n]*\b(?:trip|holiday|vacation)\b`)
 	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|what (should|can|do) we do|where to eat|restaurant|neighbourhood|neighborhood|hidden gem|full \d+\s*-?\s*days?|advise|recommend)`)
 	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
 	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
@@ -431,6 +432,14 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 			return b.plan(ctx, trip, m.Text, m)
 		}
 		return nil
+	}
+
+	// A persisted trip can still be awaiting input after its dashboard session failed.
+	// Restore the live session before routing replies or itinerary requests.
+	if b.Dashboard != nil && m.Tagged && (trip.State == models.Collecting || trip.State == models.AwaitingChoice) {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
 	}
 
 	slog.Info("trip loaded", "group", m.GroupID, "state", trip.State,
@@ -859,6 +868,11 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	if !m.Tagged {
 		return nil, nil // ordinary chatter: saved, but no reply and no LLM spend
 	}
+	// An explicit trip-planning request can also describe restaurants or neighborhoods.
+	// Start a planning session rather than treating those preferences as an itinerary question.
+	if tripPlanRe.MatchString(m.Text) {
+		return map[string]any{"intent": "revise", "revision_request": m.Text}, nil
+	}
 	if looksLikeItineraryAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
@@ -1100,15 +1114,24 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	if err := b.dashboardTask(ctx, trip, "flight-prices", "running", "Comparing flight prices"); err != nil {
 		return err
 	}
-	offer := offers[0]
-	if err := b.dashboardTask(ctx, trip, "flight-prices", "completed", "Selected the lowest displayed flight fare"); err != nil {
-		return err
-	}
 	if err := b.dashboardTask(ctx, trip, "hotel-location", "running", "Choosing a hotel in your destination"); err != nil {
 		return err
 	}
-	hotel := hotels[0]
-	if err := b.dashboardTask(ctx, trip, "hotel-location", "completed", "Selected a stay from the destination shortlist"); err != nil {
+	offer, hotel, selectionReason, err := b.selectTravelPlan(ctx, trip, offers, hotels)
+	if err != nil {
+		message := "Travel options arrived, but the trip planner could not select a plan. Please choose the option again to retry."
+		if eventErr := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); eventErr != nil {
+			return eventErr
+		}
+		if _, stateErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); stateErr != nil {
+			return stateErr
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
+	}
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "completed", "Selected the flight that best fits the group’s plan"); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "hotel-location", "completed", "Selected a stay to match the group’s preferences and budget"); err != nil {
 		return err
 	}
 	if err := b.dashboardTask(ctx, trip, "group-budget", "running", "Calculating the group’s costs"); err != nil {
@@ -1130,10 +1153,11 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	returnOffer.Origin, returnOffer.Destination = offer.Destination, offer.Origin
 
 	itinMap, err := structToMap(map[string]any{
-		"flights":     map[string]any{"embarking": embarkOffer, "returning": returnOffer},
-		"hotel":       hotel,
-		"per_person":  preview.PerPerson,
-		"group_total": preview.GroupTotal,
+		"flights":          map[string]any{"embarking": embarkOffer, "returning": returnOffer},
+		"hotel":            hotel,
+		"per_person":       preview.PerPerson,
+		"group_total":      preview.GroupTotal,
+		"selection_reason": selectionReason,
 	})
 	if err != nil {
 		return err
@@ -1176,7 +1200,14 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		return err
 	}
 	if err := b.finishDashboard(ctx, trip, offer, hotel); err != nil {
-		return err
+		message := "Your flight and hotel were selected, but activity planning could not finish. Choose the option again to retry."
+		if eventErr := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); eventErr != nil {
+			return eventErr
+		}
+		if _, stateErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, map[string]any{"flights_locked": false}); stateErr != nil {
+			return stateErr
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
 	}
 	chosen := trip.ChosenOption()
 	return b.postSummary(ctx, trip, *chosen, itinMap, people)

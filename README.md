@@ -73,3 +73,50 @@ workflow events. Gemini planning requires its configured API key.
 The frontend uses `NEXT_PUBLIC_ORCHESTRATOR_URL=http://localhost:8000` and an
 optional `NEXT_PUBLIC_ORCHESTRATOR_WS_URL=ws://localhost:8000`. For HTTPS hosting,
 use an HTTPS backend and public WSS URL. No authentication is added for this hackathon.
+
+## Lambda recording callbacks and plan selection
+
+Real search mode POSTs flight and hotel requests concurrently to the configured
+Lambda Function URLs. Set `MOCK_TRAVEL=false`, `MOCK_LLM=false`, and leave
+`FLIGHT_SERVICE_WS_URL` / `HOTEL_SERVICE_WS_URL` empty to use this path.
+Gemini requires `GEMINI_API_KEY` (or `GOOGLE_API_KEY`).
+
+Set `ORCHESTRATOR_PUBLIC_URL` to the externally reachable Go backend origin,
+for example `https://your-orchestrator.example.com`. The orchestrator includes
+an individual `callback_url` in each Lambda request pointing to:
+
+```text
+POST /travel-search/results/{requestID}
+```
+
+Each Lambda saves its result after browser cleanup and recording upload, then
+POSTs that full record to the supplied URL. The receiver validates the request
+correlation, session, service-specific results list, and terminal status. It
+acknowledges duplicate deliveries for 15 minutes. No authentication is added.
+Callback correlation is in memory: searches and their callbacks must reach the
+same Go process; restart recovery and routing across replicas are not supported.
+
+The first final result from either the callback or the synchronous Lambda
+response resumes that search exactly once. A broken HTTP connection can still
+wait for a callback within the existing 12-minute search deadline. A recording
+failure does not discard valid travel results. If no public URL is configured,
+the direct Lambda response still works; per-request callbacks are disabled.
+
+`flight_search.recording.completed` and `hotel_search.recording.completed` events
+carry `searchId`, `recordingUrl`, `recordingError`, and `deliveryError`. They mean
+recording processing has finished; check `recordingUrl` / `recordingError` for
+upload success. The dashboard persists this metadata under `recordings.flight`
+and `recordings.hotel` for reconnects, including failed searches.
+
+Once both searches provide offers, Gemini compares all returned flights and
+hotels against group preferences, timing, ratings, and per-person costs. Its
+selected IDs are validated against those actual offers. The saved itinerary
+includes `selection_reason`; the dashboard plan includes the chosen IDs and
+`selectionReason`. Gemini then generates activities around the selected travel
+plan. Selection or activity-generation errors fail the dashboard session and
+return the trip to destination choice for a retry. Plans still require group
+approval before any booking.
+
+Deploy the updated flight and hotel Lambda code in `travel-search-services` to
+accept `callback_url`. This is still a synchronous Lambda invocation with a
+completion callback, not an asynchronous job-submission endpoint.
