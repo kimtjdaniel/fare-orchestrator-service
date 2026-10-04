@@ -1506,6 +1506,7 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		"hotel_options":  hotels,
 		"selected_flight_id": offer.OfferID,
 		"selected_hotel_id":  hotel.OfferID,
+		"selection_reason":   selectionReason,
 	})
 	if err != nil {
 		return err

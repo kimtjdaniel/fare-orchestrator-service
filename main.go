@@ -110,9 +110,6 @@ func main() {
 	mux.HandleFunc("POST /telegram/webhook", telegramWebhookHandler(cfg, brain))
 	mux.HandleFunc("GET /trips/{id}", getTripHandler(st))
 	mux.HandleFunc("GET /groups/{gid}/trip", getGroupTripHandler(st))
-	mux.HandleFunc("GET /groups/{gid}/events", groupEventsHandler(brain))
-	mux.HandleFunc("GET /groups/{gid}/sessions", listGroupSessionsHandler(brain))
-	mux.HandleFunc("GET /groups/{gid}/sessions/{sid}", getGroupSessionHandler(brain))
 	mux.HandleFunc("GET /dashboard/trips", listDashboardTripsHandler(brain))
 	mux.HandleFunc("GET /dashboard/trips/{gid}", getDashboardTripHandler(brain))
 	mux.HandleFunc("POST /dashboard/trips/{gid}", postDashboardActHandler(brain))
@@ -391,26 +388,6 @@ func writeDash(w http.ResponseWriter, err error, ok any) {
 		return
 	}
 	writeJSON(w, http.StatusOK, ok)
-}
-
-func groupEventsHandler(brain *orchestrator.Brain) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		brain.ServeGroupEvents(w, r, r.PathValue("gid"))
-	}
-}
-
-func listGroupSessionsHandler(brain *orchestrator.Brain) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		rows, err := brain.ListGroupSnapshots(r.Context(), r.PathValue("gid"))
-		writeDash(w, err, rows)
-	}
-}
-
-func getGroupSessionHandler(brain *orchestrator.Brain) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		view, err := brain.GetSessionSnapshot(r.Context(), r.PathValue("gid"), r.PathValue("sid"))
-		writeDash(w, err, view)
-	}
 }
 
 func listDashboardTripsHandler(brain *orchestrator.Brain) http.HandlerFunc {
