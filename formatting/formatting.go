@@ -122,7 +122,11 @@ func SummaryMessage(option models.Option, itinerary map[string]any, people []mod
 		lines = append(lines, "", spend.TotalLine(), spend.FoodLine())
 	}
 	lines = append(lines, "")
-	lines = append(lines, "Yes to book it, or no to look at the other options. There's a poll for that too.")
+	lines = append(lines, "The full plan is on your dashboard — fare, stay, day by day, and what each person owes.")
+	lines = append(lines, "Open a booking link when you're ready. Dates and guests are already filled in. You confirm the card, so payment stays in your hands.")
+	if link := strings.TrimSpace(dashboardURL); link != "" {
+		lines = append(lines, "", link)
+	}
 	return strings.Join(lines, "\n")
 }
 

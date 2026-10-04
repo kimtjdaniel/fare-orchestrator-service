@@ -1466,6 +1466,11 @@ func (b *Brain) handleBookAsk(ctx context.Context, trip *models.Trip, m models.I
 	case models.Booked:
 		return b.say(ctx, trip.GroupID, "Already booked (sandbox). Say cancel if you want to start over.", nil)
 	default:
+		trip = b.fillSearchFacts(ctx, trip)
+		explicitSearch := looksLikeSearchAsk(m.Text) || looksLikeDashboardAsk(m.Text) || strings.Contains(m.Text, "✅") || trip.LastPoll == "finalize" || airportFromLabel(m.Text) != ""
+		if explicitSearch && !liveSearchReady(trip) {
+			return b.say(ctx, trip.GroupID, searchGapLine(trip), nil)
+		}
 		n, err := b.ensureBookableOption(ctx, trip)
 		if err != nil {
 			return err
@@ -1494,7 +1499,7 @@ func (b *Brain) handleBookAsk(ctx context.Context, trip *models.Trip, m models.I
 			return err
 		}
 		trip = b.syncTripBasics(ctx, trip, m.Text)
-		if looksLikeSearchAsk(m.Text) || looksLikeDashboardAsk(m.Text) || strings.Contains(m.Text, "✅") || trip.LastPoll == "finalize" || airportFromLabel(m.Text) != "" {
+		if explicitSearch {
 			return b.startTravelSearch(ctx, trip)
 		}
 		return b.offerPlanFinalize(ctx, trip, m.Text)
@@ -1893,6 +1898,125 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+func liveSearchReady(trip *models.Trip) bool {
+	if trip == nil || strings.TrimSpace(tripDestination(trip)) == "" {
+		return false
+	}
+	if originAirportCode(trip.Origin, trip.Participants) == "" {
+		return false
+	}
+	return isoDateOK(trip.EmbarkingDate) && isoDateOK(trip.ReturningDate)
+}
+
+func searchGapLine(trip *models.Trip) string {
+	if trip == nil || strings.TrimSpace(tripDestination(trip)) == "" {
+		return "Where do you want to go? Tell me the city and I'll search flights and stays."
+	}
+	if originAirportCode(trip.Origin, trip.Participants) == "" {
+		return "Where are you flying from? Once I have that, I'll search flights and stays."
+	}
+	return "Which dates should I search? A month, or a start and end day, is enough."
+}
+
+// fillSearchFacts copies origin, destination, and dates the group already said into the trip
+// so an explicit "search flights" does not invent this weekend or wait on an open poll.
+func (b *Brain) fillSearchFacts(ctx context.Context, trip *models.Trip) *models.Trip {
+	if trip == nil {
+		return trip
+	}
+	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 40, true)
+	if err != nil {
+		return trip
+	}
+	var blob strings.Builder
+	for _, msg := range history {
+		blob.WriteString(msg.Text)
+		blob.WriteByte('\n')
+	}
+	text := blob.String()
+	h := harvestText(text, b.today())
+	fields := map[string]any{}
+	if code := statedOrigin(text, trip); code != "" && !strings.EqualFold(trip.Origin, code) {
+		fields["origin"] = code
+		trip.Origin = code
+		for i := range trip.Participants {
+			if trip.Participants[i].OriginAirport == "" {
+				trip.Participants[i].OriginAirport = code
+				fields["participants"] = trip.Participants
+				break
+			}
+		}
+	}
+	if strings.TrimSpace(tripDestination(trip)) == "" && h.Destination != "" {
+		fields["destination"] = h.Destination
+		trip.Destination = h.Destination
+	}
+	if len(h.Dates) > 0 {
+		start := h.Dates[0]
+		end := h.Dates[len(h.Dates)-1]
+		nights := h.Nights
+		if nights <= 0 {
+			nights = trip.DurationNights
+		}
+		if nights > 0 {
+			if s, err := models.ParseDate(start); err == nil {
+				end = s.AddDate(0, 0, nights-1).Format("2006-01-02")
+			}
+		}
+		if !isoDateOK(trip.EmbarkingDate) || !sameDateMonth(trip.EmbarkingDate, start) {
+			fields["embarking_date"] = start
+			fields["returning_date"] = end
+			trip.EmbarkingDate = start
+			trip.ReturningDate = end
+			if nights > 0 {
+				fields["duration_nights"] = nights
+				trip.DurationNights = nights
+			}
+			if len(trip.Options) > 0 {
+				opts := append([]models.Option(nil), trip.Options...)
+				for i := range opts {
+					opts[i].EmbarkingDate = start
+					opts[i].ReturningDate = end
+					if nights > 0 {
+						opts[i].DurationNights = nights
+					}
+				}
+				fields["options"] = opts
+				trip.Options = opts
+			}
+		}
+	}
+	if len(fields) == 0 {
+		return trip
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, fields)
+	if err != nil || updated == nil {
+		return trip
+	}
+	return updated
+}
+
+func statedOrigin(text string, trip *models.Trip) string {
+	low := strings.ToLower(text)
+	for _, city := range []string{"vancouver", "toronto", "calgary", "edmonton", "montreal", "ottawa", "seattle", "victoria"} {
+		if strings.Contains(low, "from "+city) || strings.Contains(low, "out of "+city) || (strings.Contains(low, city) && strings.Contains(low, "fly")) {
+			if code := cityAirport[city]; code != "" {
+				return code
+			}
+		}
+	}
+	return originAirportCode(trip.Origin, trip.Participants)
+}
+
+func sameDateMonth(a, b string) bool {
+	ad, err1 := models.ParseDate(a)
+	bd, err2 := models.ParseDate(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return ad.Year() == bd.Year() && ad.Month() == bd.Month()
+}
+
 // selectOption flattens the chosen Option onto the trip, then sends a full plan summary
 // and waits for the group to finalize before any live flight/hotel search.
 func (b *Brain) lockChosenOption(ctx context.Context, trip *models.Trip, number int) (*models.Trip, error) {
@@ -1964,24 +2088,13 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 }
 
 func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error {
-	if trip.Intake != nil && !searchEssentials(trip) {
-		if trip.State != models.Collecting {
-			updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
-			if err != nil {
-				return err
-			}
-			if updated != nil {
-				trip = updated
-			}
-		}
-		return b.continueIntake(ctx, trip, nil)
+	trip = b.fillSearchFacts(ctx, trip)
+	if !liveSearchReady(trip) {
+		return b.say(ctx, trip.GroupID, searchGapLine(trip), nil)
 	}
 	option := trip.ChosenOption()
 	if option == nil {
-		if trip.Intake != nil {
-			return b.continueIntake(ctx, trip, nil)
-		}
-		return b.say(ctx, trip.GroupID, "Pick a destination first, then I'll send the plan to finalize.", nil)
+		return b.say(ctx, trip.GroupID, "Where do you want to go? Tell me the city and I'll search flights and stays.", nil)
 	}
 	if option.DestinationAirport == "" {
 		if cands := destAirportCandidates("", option.Destination); len(cands) > 0 {
@@ -1989,32 +2102,11 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 		}
 	}
 	if !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
-		if trip.Intake != nil && trip.Intake.ExactDates != nil && isoDateOK(trip.Intake.ExactDates.Depart) && isoDateOK(trip.Intake.ExactDates.Return) {
-			option.EmbarkingDate = trip.Intake.ExactDates.Depart
-			option.ReturningDate = trip.Intake.ExactDates.Return
-		}
-	}
-	if !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
-		if trip.Intake != nil {
-			if trip.State != models.Collecting {
-				updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
-				if err != nil {
-					return err
-				}
-				if updated != nil {
-					trip = updated
-				}
-			}
-			return b.continueIntake(ctx, trip, nil)
-		}
-		dates := allStoredDates(trip.Participants)
-		if len(dates) >= 2 {
-			option.EmbarkingDate = dates[0]
-			option.ReturningDate = dates[len(dates)-1]
+		if isoDateOK(trip.EmbarkingDate) && isoDateOK(trip.ReturningDate) {
+			option.EmbarkingDate = trip.EmbarkingDate
+			option.ReturningDate = trip.ReturningDate
 		} else {
-			start, end := comingWeekend(b.today())
-			option.EmbarkingDate = start.Format("2006-01-02")
-			option.ReturningDate = end.Format("2006-01-02")
+			return b.say(ctx, trip.GroupID, searchGapLine(trip), nil)
 		}
 	}
 	if option.DurationNights == 0 {
@@ -2265,6 +2357,13 @@ func destAirportCandidates(airport, dest string) []string {
 	}
 	if strings.Contains(blob, "paris") {
 		add("CDG")
+	}
+	if strings.Contains(blob, "china") || strings.Contains(blob, "beijing") {
+		add("PEK")
+		add("PKX")
+	}
+	if strings.Contains(blob, "shanghai") {
+		add("PVG")
 	}
 	for city, code := range cityAirport {
 		if strings.Contains(blob, city) {

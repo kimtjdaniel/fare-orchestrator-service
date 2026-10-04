@@ -114,7 +114,7 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 	if err = b.dashboardEvent(ctx, t, "planning.completed", map[string]any{"plan": plan, "message": "Itinerary generated and saved"}); err != nil {
 		return err
 	}
-	return b.dashboardEvent(ctx, t, "session.completed", map[string]any{"message": "Your trip plan is ready for group approval"})
+	return b.dashboardEvent(ctx, t, "session.completed", map[string]any{"message": "Your plan is ready. Booking links are filled in — you confirm payment."})
 }
 
 func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin string, option *models.Option) ([]models.FlightOffer, []models.HotelOffer, error, error) {

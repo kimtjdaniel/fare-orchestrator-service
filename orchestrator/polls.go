@@ -102,17 +102,13 @@ func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string
 
 func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen models.Option, itin map[string]any, people []models.Participant) error {
 	url := b.tripPageURL(ctx, trip, "")
-	if err := b.say(ctx, trip.GroupID, formatting.SummaryMessage(chosen, itin, people, trip.ID, url),
-		[]messaging.Button{{Label: "Book it", Payload: "✅"}, {Label: "Back", Payload: "❌"}}); err != nil {
+	if err := b.say(ctx, trip.GroupID, formatting.SummaryMessage(chosen, itin, people, trip.ID, url), nil); err != nil {
 		return err
 	}
 	if url != "" {
 		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"shared_dashboard": true}); err != nil {
 			return err
 		}
-	}
-	if err := b.sendPoll(ctx, trip.GroupID, "Book this one?", []string{"Yes, book it", "Show the other options"}, "approve", trip.ID); err != nil {
-		return err
 	}
 	return b.maybeAskPayer(ctx, trip, false)
 }
@@ -339,7 +335,12 @@ func (b *Brain) helpDecide(ctx context.Context, trip *models.Trip, m models.Inco
 	case trip.State == models.AwaitingChoice && len(trip.Options) >= 2:
 		return b.pollOptions(ctx, trip, trip.Options)
 	case trip.State == models.AwaitingApproval:
-		return b.sendPoll(ctx, trip.GroupID, "Book this one?", []string{"Yes, book it", "Show the other options"}, "approve", trip.ID)
+		url := b.tripPageURL(ctx, trip, "")
+		text := "Your plan is on the dashboard. Booking links are filled in — you confirm the card."
+		if url != "" {
+			text += "\n" + url
+		}
+		return b.say(ctx, trip.GroupID, text, nil)
 	default:
 		return b.askBudget(ctx, trip)
 	}
