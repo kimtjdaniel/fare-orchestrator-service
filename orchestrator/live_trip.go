@@ -2,12 +2,14 @@ package orchestrator
 
 import (
 	"context"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"fare-brain/formatting"
 	"fare-brain/models"
+	"fare-brain/tools"
 )
 
 type DashboardError struct {
@@ -28,10 +30,13 @@ func (b *Brain) ListDashboardTrips(ctx context.Context) ([]map[string]any, error
 			continue
 		}
 		out = append(out, map[string]any{
-			"id": t.ID, "group_id": t.GroupID, "state": t.State,
+			"group_id":    t.GroupID,
+			"group_name":  t.GroupName,
 			"destination": tripDestination(t),
-			"start_date":  t.EmbarkingDate, "end_date": t.ReturningDate,
-			"updated_at": t.UpdatedAt,
+			"origin":      t.Origin,
+			"dates":       formatting.Dates(t.EmbarkingDate, t.ReturningDate),
+			"state":       t.State,
+			"updated_at":  t.UpdatedAt,
 		})
 	}
 	return out, nil
@@ -54,6 +59,27 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		body = map[string]any{}
 	}
 	action := strings.ToLower(strings.TrimSpace(strAny(body["action"])))
+	if action == "chat" {
+		text := strAny(body["text"])
+		if text == "" {
+			return nil, &DashboardError{Status: 400, Msg: "text is required"}
+		}
+		actor := strAny(body["actor"])
+		if actor == "" {
+			actor = "Someone"
+		}
+		b.Handle(ctx, models.IncomingMessage{
+			GroupID: groupID, GroupName: trip.GroupName,
+			SenderID: "dashboard:"+actor, SenderName: actor,
+			Text: text, Tagged: true,
+		})
+		fresh, err := b.Store.GetTrip(ctx, groupID)
+		if err != nil || fresh == nil {
+			return b.dashboardPayload(ctx, trip)
+		}
+		return b.dashboardPayload(ctx, fresh)
+	}
+
 	itin := cloneMap(trip.Itinerary)
 	if itin == nil {
 		itin = map[string]any{}
@@ -61,7 +87,7 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 	fields := map[string]any{}
 
 	switch action {
-	case "pick_flight":
+	case "pick_flight", "select_flight":
 		offer := findItinOffer(itin["flight_options"], strAny(body["offer_id"]))
 		if offer == nil {
 			return nil, &DashboardError{Status: 404, Msg: "flight offer not found"}
@@ -69,7 +95,7 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		itin["selected_flight"] = offer
 		itin["selected_flight_id"] = strAny(offer["offer_id"])
 		fields["itinerary"] = itin
-	case "pick_hotel":
+	case "pick_hotel", "select_hotel":
 		offer := findItinOffer(itin["hotel_options"], strAny(body["offer_id"]))
 		if offer == nil {
 			return nil, &DashboardError{Status: 404, Msg: "hotel offer not found"}
@@ -79,11 +105,13 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		itin["hotel"] = offer
 		fields["itinerary"] = itin
 	case "set_budget":
-		if n := numAny(body["amount_cad"]); n != nil {
-			itin["budget_cad"] = *n
-			fields["itinerary"] = itin
-			fields["cost_per_person"] = *n
+		note := strAny(body["budget"])
+		if note == "" {
+			if n := numAny(body["amount_cad"]); n != nil {
+				note = strconv.FormatFloat(*n, 'f', 0, 64)
+			}
 		}
+		fields["budget_note"] = note
 	case "set_payer":
 		name := strAny(body["name"])
 		if name == "" {
@@ -104,8 +132,8 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		fields["participants"] = people
 		fields["payer_name"] = name
 	case "save_traveler":
+		name := orStr(strAny(body["name"]), strAny(body["whatsapp_name"]))
 		pid := strAny(body["participant_id"])
-		name := strAny(body["whatsapp_name"])
 		people := append([]models.Participant(nil), trip.Participants...)
 		idx := -1
 		for i, p := range people {
@@ -141,7 +169,11 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 	if err != nil {
 		return nil, err
 	}
-	_ = b.say(ctx, groupID, "Dashboard updated — I saved that on the trip.", nil)
+	if action != "save_traveler" {
+		_ = b.say(ctx, groupID, "Dashboard updated — I saved that on the trip.", nil)
+	} else {
+		_ = b.say(ctx, groupID, "Saved traveler details on the trip. I didn't put the passport in chat.", nil)
+	}
 	return b.dashboardPayload(ctx, trip)
 }
 
@@ -151,22 +183,41 @@ func (b *Brain) dashboardPayload(ctx context.Context, trip *models.Trip) (map[st
 		itin = map[string]any{}
 	}
 	spend := formatting.ComputeSpend(trip)
+	advisor := asMapAny(itin["advisor"])
 	msgs, _ := b.Store.GetMessages(ctx, trip.GroupID, nil, 80, true)
+	people := dashPeople(trip)
+	editable := trip.State != models.Booked && trip.State != models.Cancelled && trip.State != models.BookingState
 	return map[string]any{
-		"id": trip.ID, "group_id": trip.GroupID, "state": trip.State,
-		"destination":      tripDestination(trip),
-		"start_date":       trip.EmbarkingDate, "end_date": trip.ReturningDate,
-		"nights":           trip.DurationNights,
-		"budget_cad":       numAny(itin["budget_cad"]),
-		"payer_name":       trip.PayerName,
-		"locked_spend_cad": spend.TravelEach, "food_estimate_cad": 0,
-		"people":           dashPeople(trip),
-		"places":           dashPlaces(trip),
-		"flights":          dashItinOffers(itin, "flight_options", "selected_flight_id"),
-		"hotels":           dashItinOffers(itin, "hotel_options", "selected_hotel_id"),
-		"messages":         dashMessages(msgs),
-		"itinerary":        itin,
-		"config":           map[string]any{"currency": "CAD", "mock_travel": b.Config.MockTravel},
+		"group_id":    trip.GroupID,
+		"group_name":  trip.GroupName,
+		"state":       trip.State,
+		"editable":    editable,
+		"destination": tripDestination(trip),
+		"origin":      trip.Origin,
+		"dates":       formatting.Dates(trip.EmbarkingDate, trip.ReturningDate),
+		"nights":      trip.DurationNights,
+		"budget_note": trip.BudgetNote,
+		"payer_name":  trip.PayerName,
+		"updated_at":  trip.UpdatedAt,
+		"spend": map[string]any{
+			"flight_each":   spend.FlightEach,
+			"hotel_group":   spend.HotelGroup,
+			"hotel_each":    spend.HotelEach,
+			"travel_each":   spend.TravelEach,
+			"travel_group":  spend.TravelGroup,
+			"people":        spend.People,
+			"includes_food": false,
+			"food_note":     strAny(advisor["food_note"]),
+			"food_per_day":  numAny(advisor["food_per_day_cad"]),
+			"food_trip":     numAny(advisor["food_trip_cad"]),
+		},
+		"owes":     dashOwes(trip, spend),
+		"people":   people,
+		"days":     dashDays(itin),
+		"places":   dashPlaces(trip, itin),
+		"flights":  dashViewFlights(itin),
+		"hotels":   dashViewHotels(itin),
+		"messages": dashMessages(msgs),
 	}, nil
 }
 
@@ -174,59 +225,174 @@ func dashPeople(trip *models.Trip) []map[string]any {
 	out := make([]map[string]any, 0, len(trip.Participants))
 	for _, p := range trip.Participants {
 		out = append(out, map[string]any{
-			"id": p.PID, "whatsapp_name": p.WhatsAppName, "legal_name": p.LegalName,
-			"date_of_birth": p.DateOfBirth, "passport_last4": last4(p.PassportNumber),
-			"has_passport": p.PassportNumber != "", "origin": orStr(p.Origin, p.OriginCity),
-			"payer": p.Payer, "activity": p.GeneralPreferences.Activity, "culinary": p.GeneralPreferences.Culinary,
+			"name": p.WhatsAppName, "payer": p.Payer, "legal_name": p.LegalName,
+			"date_of_birth": p.DateOfBirth, "has_passport": p.PassportNumber != "",
+			"passport_last4": last4(p.PassportNumber), "origin": orStr(p.Origin, p.OriginCity),
 		})
 	}
 	return out
 }
 
-func dashPlaces(trip *models.Trip) []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(v string) {
-		v = strings.TrimSpace(v)
-		if v == "" || seen[strings.ToLower(v)] {
-			return
+func dashDays(itin map[string]any) []map[string]any {
+	out := make([]map[string]any, 0)
+	push := func(raw any) {
+		for _, item := range sliceAny(raw) {
+			d := asMapAny(item)
+			if d == nil {
+				continue
+			}
+			title := orStr(strAny(d["title"]), strAny(d["date"]))
+			body := orStr(strAny(d["body"]), strAny(d["description"]))
+			if title == "" && body == "" {
+				continue
+			}
+			out = append(out, map[string]any{"title": title, "body": body, "food_cad": numAny(d["food_cad"])})
 		}
-		seen[strings.ToLower(v)] = true
-		out = append(out, v)
 	}
-	add(trip.Destination)
-	if trip.Itinerary != nil {
-		add(strAny(trip.Itinerary["destination"]))
+	if advisor := asMapAny(itin["advisor"]); advisor != nil {
+		push(advisor["days"])
 	}
-	for _, o := range trip.Options {
-		add(o.Destination)
+	if len(out) == 0 {
+		if plan := asMapAny(itin["dashboard_plan"]); plan != nil {
+			push(plan["days"])
+		}
 	}
 	return out
 }
 
-func dashItinOffers(itin map[string]any, listKey, selKey string) []map[string]any {
-	selID := strAny(itin[selKey])
-	raw := sliceAny(itin[listKey])
-	out := make([]map[string]any, 0, len(raw))
-	for _, item := range raw {
-		m := asMapAny(item)
-		if m == nil {
+func dashPlaces(trip *models.Trip, itin map[string]any) []map[string]any {
+	city := tripDestination(trip)
+	out := make([]map[string]any, 0)
+	rest := asMapAny(itin["restaurants"])
+	if rest == nil {
+		return out
+	}
+	for _, item := range sliceAny(rest["places"]) {
+		p := asMapAny(item)
+		if p == nil {
 			continue
 		}
-		row := cloneMap(m)
-		id := orStr(strAny(m["offer_id"]), strAny(m["id"]))
-		row["picked"] = id != "" && id == selID
-		out = append(out, row)
+		name := strAny(p["name"])
+		if name == "" {
+			continue
+		}
+		q := name
+		if city != "" {
+			q += " " + city
+		}
+		out = append(out, map[string]any{
+			"name": name, "neighborhood": strAny(p["neighborhood"]), "why": strAny(p["why"]),
+			"dish": strAny(p["dish"]), "est_cad": numAny(p["est_cad"]),
+			"map": "https://www.google.com/maps/search/?api=1&query=" + url.QueryEscape(q),
+		})
 	}
 	return out
+}
+
+func dashViewFlights(itin map[string]any) []map[string]any {
+	selID := strAny(itin["selected_flight_id"])
+	if selID == "" {
+		selID = nestStr(asMapAny(itin["selected_flight"]), "offer_id")
+	}
+	out := make([]map[string]any, 0)
+	seen := map[string]bool{}
+	push := func(m map[string]any) {
+		if m == nil {
+			return
+		}
+		id := orStr(strAny(m["offer_id"]), strAny(m["id"]))
+		if id != "" && seen[id] {
+			return
+		}
+		if id != "" {
+			seen[id] = true
+		}
+		out = append(out, map[string]any{
+			"offer_id": id, "airline": strAny(m["airline"]),
+			"origin": strAny(m["origin"]), "destination": strAny(m["destination"]),
+			"summary": strAny(m["summary"]), "price": floatOr(m["price"]),
+			"selected": id != "" && id == selID,
+		})
+	}
+	push(asMapAny(itin["selected_flight"]))
+	push(mapVal(asMapAny(itin["flights"]), "embarking"))
+	for _, item := range sliceAny(itin["flight_options"]) {
+		push(asMapAny(item))
+	}
+	return out
+}
+
+func dashViewHotels(itin map[string]any) []map[string]any {
+	selID := strAny(itin["selected_hotel_id"])
+	hotel := asMapAny(itin["hotel"])
+	if selID == "" {
+		selID = nestStr(hotel, "offer_id")
+	}
+	out := make([]map[string]any, 0)
+	seen := map[string]bool{}
+	push := func(m map[string]any) {
+		if m == nil {
+			return
+		}
+		id := orStr(strAny(m["offer_id"]), strAny(m["id"]))
+		if id != "" && seen[id] {
+			return
+		}
+		if id != "" {
+			seen[id] = true
+		}
+		out = append(out, map[string]any{
+			"offer_id": id, "name": strAny(m["name"]), "city": strAny(m["city"]),
+			"nightly": floatOr(m["price_per_night"]), "total": floatOr(m["total_price"]),
+			"rating": numAny(m["rating"]), "image": strAny(m["image_url"]),
+			"selected": id != "" && id == selID,
+		})
+	}
+	push(asMapAny(itin["selected_hotel"]))
+	push(hotel)
+	for _, item := range sliceAny(itin["hotel_options"]) {
+		push(asMapAny(item))
+	}
+	return out
+}
+
+func dashOwes(trip *models.Trip, spend formatting.Spend) []map[string]any {
+	if split := mapVal(trip.Itinerary, "split"); split != nil {
+		rows := make([]map[string]any, 0)
+		for _, item := range sliceAny(split["owes"]) {
+			o := asMapAny(item)
+			if o == nil {
+				continue
+			}
+			rows = append(rows, map[string]any{"from": strAny(o["from"]), "to": strAny(o["to"]), "amount": floatOr(o["amount"])})
+		}
+		if len(rows) > 0 {
+			return rows
+		}
+	}
+	if !spend.Ok() || trip.PayerName == "" {
+		return []map[string]any{}
+	}
+	names := make([]string, 0, len(trip.Participants))
+	for _, p := range trip.Participants {
+		if strings.TrimSpace(p.WhatsAppName) != "" {
+			names = append(names, p.WhatsAppName)
+		}
+	}
+	split := tools.ComputeSplit(names, spend.FlightEach, spend.HotelGroup, trip.PayerName)
+	rows := make([]map[string]any, 0, len(split.Owes))
+	for _, o := range split.Owes {
+		rows = append(rows, map[string]any{"from": o.From, "to": o.To, "amount": o.Amount})
+	}
+	return rows
 }
 
 func dashMessages(msgs []models.Message) []map[string]any {
 	out := make([]map[string]any, 0, len(msgs))
 	for _, m := range msgs {
 		out = append(out, map[string]any{
-			"id": m.ExternalID, "from": m.SenderName, "text": m.Text,
-			"at": m.SentAt.UTC().Format(time.RFC3339), "from_agent": m.IsBot,
+			"id": m.ExternalID, "sender": m.SenderName, "text": m.Text,
+			"bot": m.IsBot || m.SenderID == "fare-bot", "at": m.SentAt.UTC().Format(time.RFC3339),
 		})
 	}
 	return out
@@ -318,6 +484,13 @@ func numAny(v any) *float64 {
 	return nil
 }
 
+func floatOr(v any) float64 {
+	if n := numAny(v); n != nil {
+		return *n
+	}
+	return 0
+}
+
 func orStr(a, b string) string {
 	if strings.TrimSpace(a) != "" {
 		return a
@@ -331,4 +504,18 @@ func last4(s string) string {
 		return s
 	}
 	return s[len(s)-4:]
+}
+
+func nestStr(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	return strAny(m[key])
+}
+
+func mapVal(m map[string]any, key string) map[string]any {
+	if m == nil {
+		return nil
+	}
+	return asMapAny(m[key])
 }
