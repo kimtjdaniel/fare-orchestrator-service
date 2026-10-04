@@ -42,7 +42,7 @@ func forwardSearch(ctx context.Context, agent string, event map[string]any) {
 		if status == "complete" || status == "partially_complete" {
 			message = "Search finished; waiting for saved results"
 		}
-		events.emit(agent+"_search.progress", map[string]any{"message": message})
+		events.emit(agent+"_search.progress", map[string]any{"message": message, "agentType": agent, "event": event})
 	}
 }
 func runSearchService(ctx context.Context, cfg *config.Settings, agent string, request map[string]any) (result map[string]any, resultErr error) {
@@ -64,8 +64,10 @@ func runSearchService(ctx context.Context, cfg *config.Settings, agent string, r
 	}
 	var callback <-chan map[string]any
 	if cfg.OrchestratorPublicURL != "" {
-		id, results := registerSearchCallback(agent, searchRecordText(request["session_id"]))
+		id, results := registerSearchCallback(ctx, agent, searchRecordText(request["session_id"]))
 		callback = results
+		defer stopSearchUpdates(id)
+		request["progress_callback_url"] = cfg.OrchestratorPublicURL + "/travel-search/events/" + id
 		request["callback_url"] = cfg.OrchestratorPublicURL + "/travel-search/results/" + id
 	}
 	type response struct {

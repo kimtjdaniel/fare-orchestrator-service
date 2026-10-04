@@ -80,7 +80,7 @@ func TripView(ctx context.Context, s Store, tripID string) (map[string]any, erro
 // allowedTripFields whitelists what UpdateTrip may change.
 var allowedTripFields = map[string]bool{
 	"group_name": true, "state": true, "chosen_option_position": true, "itinerary": true,
-	"approved_by": true, "approved_at": true, "history_start": true, "options": true,
+	"approved_by": true, "approved_at": true, "pending_approver": true, "history_start": true, "options": true,
 	"participants": true, "flights": true, "accommodations": true,
 	"origin": true, "destination": true, "destination_airport": true,
 	"activity_description": true, "culinary_description": true, "duration_nights": true,
@@ -89,6 +89,7 @@ var allowedTripFields = map[string]bool{
 	"introduced":       true,
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
+	"pending_trip_request": true,
 	"organizer_wa_id": true, "intake": true, "pending_question": true, "conflicts": true,
 	"intake_polls": true, "last_agent_text": true,
 }
@@ -118,6 +119,8 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			trip.Itinerary, _ = v.(map[string]any)
 		case "approved_by":
 			trip.ApprovedBy, _ = v.(string)
+		case "pending_approver":
+			trip.PendingApprover, _ = v.(string)
 		case "approved_at":
 			if t, ok := v.(time.Time); ok {
 				trip.ApprovedAt = &t
@@ -183,6 +186,8 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			trip.BudgetNote, _ = v.(string)
 		case "flights_locked":
 			trip.FlightsLocked, _ = v.(bool)
+		case "pending_trip_request":
+			trip.PendingTripRequest, _ = v.(*models.PendingTripRequest)
 		case "pending_change":
 			switch pc := v.(type) {
 			case nil:

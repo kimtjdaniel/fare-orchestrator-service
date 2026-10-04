@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -33,21 +34,22 @@ type Activity struct {
 	Message   string    `json:"message"`
 }
 type Snapshot struct {
-	Recordings    map[string]map[string]any            `json:"recordings,omitempty"`
-	Session       Session                              `json:"session"`
-	Revision      uint64                               `json:"revision"`
-	Flight        string                               `json:"flight"`
-	Hotel         string                               `json:"hotel"`
-	Planning      string                               `json:"planning"`
-	PlanningTasks map[string]string                    `json:"planningTasks"`
-	FlightMessage string                               `json:"flightMessage"`
-	HotelMessage  string                               `json:"hotelMessage"`
-	Flights       []map[string]any                     `json:"flights"`
-	Hotels        []map[string]any                     `json:"hotels"`
-	Plan          map[string]any                       `json:"plan"`
-	Activity      []Activity                           `json:"activity"`
-	Error         *string                              `json:"error"`
-	Previews      map[string]map[string]map[string]any `json:"previews"`
+	Recordings           map[string]map[string]any            `json:"recordings,omitempty"`
+	Session              Session                              `json:"session"`
+	Revision             uint64                               `json:"revision"`
+	Flight               string                               `json:"flight"`
+	Hotel                string                               `json:"hotel"`
+	Planning             string                               `json:"planning"`
+	PlanningTasks        map[string]string                    `json:"planningTasks"`
+	PlanningTaskMessages map[string]string                    `json:"planningTaskMessages,omitempty"`
+	FlightMessage        string                               `json:"flightMessage"`
+	HotelMessage         string                               `json:"hotelMessage"`
+	Flights              []map[string]any                     `json:"flights"`
+	Hotels               []map[string]any                     `json:"hotels"`
+	Plan                 map[string]any                       `json:"plan"`
+	Activity             []Activity                           `json:"activity"`
+	Error                *string                              `json:"error"`
+	Previews             map[string]map[string]map[string]any `json:"previews"`
 }
 type group struct {
 	Sessions    []*Snapshot `json:"sessions"`
@@ -55,26 +57,62 @@ type group struct {
 	subscribers map[chan []byte]bool
 }
 type Manager struct {
-	mu     sync.Mutex
-	store  store.Store
-	groups map[string]*group
+	mu                   sync.Mutex
+	store                store.Store
+	groups               map[string]*group
+	dashboardSubscribers map[chan []byte]bool
+	dashboardRevision    uint64
 }
 
-func New(st store.Store) *Manager { return &Manager{store: st, groups: map[string]*group{}} }
+func New(st store.Store) *Manager {
+	return &Manager{store: st, groups: map[string]*group{}, dashboardSubscribers: map[chan []byte]bool{}}
+}
+
+// dashboardSessionsLocked loads persisted groups as well as groups active in this process.
+// The caller holds m.mu so the initial snapshot and subscription are atomic.
+func (m *Manager) dashboardSessionsLocked(ctx context.Context) ([]*Snapshot, error) {
+	trips, err := m.store.ListTrips(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, trip := range trips {
+		if _, err := m.load(ctx, trip.GroupID); err != nil {
+			return nil, err
+		}
+	}
+	sessions := []*Snapshot{}
+	seen := map[string]bool{}
+	for _, g := range m.groups {
+		for _, snapshot := range g.Sessions {
+			if !seen[snapshot.Session.ID] {
+				seen[snapshot.Session.ID] = true
+				sessions = append(sessions, snapshot)
+			}
+		}
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].Session.CreatedAt.Equal(sessions[j].Session.CreatedAt) {
+			return sessions[i].Session.ID < sessions[j].Session.ID
+		}
+		return sessions[i].Session.CreatedAt.After(sessions[j].Session.CreatedAt)
+	})
+	return sessions, nil
+}
 
 func (m *Manager) load(ctx context.Context, id string) (*group, error) {
+	aliases := models.GroupIDKeys(id)
 	id = models.CanonicalGroupID(id)
 	if g := m.groups[id]; g != nil {
 		return g, nil
 	}
-	for _, alias := range models.GroupIDKeys(id) {
+	for _, alias := range aliases {
 		if g := m.groups[alias]; g != nil {
 			m.groups[id] = g
 			return g, nil
 		}
 	}
 	g := &group{Sessions: []*Snapshot{}, subscribers: map[chan []byte]bool{}}
-	for _, alias := range models.GroupIDKeys(id) {
+	for _, alias := range aliases {
 		saved, err := m.store.GetWhatsAppSession(ctx, "dashboard:"+alias)
 		if err != nil {
 			return nil, err
@@ -155,20 +193,35 @@ func syncSession(s *Session, t *models.Trip) {
 	} else if t.State == models.Collecting {
 		s.Message = "Understanding your group’s dates and preferences."
 	}
+	if (t.State == models.Collecting || t.State == models.AwaitingChoice) && (s.Status == "completed" || s.Status == "failed") {
+		s.Status = "created"
+	}
 }
 func (m *Manager) broadcast(g *group, event map[string]any) {
+	broadcastSubscribers(g.subscribers, event)
+	m.dashboardRevision++
+	// Group revisions remain scoped to the group; dashboard revisions cover all groups.
+	dashboardEvent := make(map[string]any, len(event))
+	for key, value := range event {
+		dashboardEvent[key] = value
+	}
+	dashboardEvent["revision"] = m.dashboardRevision
+	broadcastSubscribers(m.dashboardSubscribers, dashboardEvent)
+}
+
+func broadcastSubscribers(subscribers map[chan []byte]bool, event map[string]any) {
 	raw, err := json.Marshal(event)
 	if err != nil {
 		return
 	}
 	ephemeral := event["type"] == "agent.browser.frame"
-	for ch := range g.subscribers {
+	for ch := range subscribers {
 		select {
 		case ch <- raw:
 		default:
 			if !ephemeral {
 				close(ch)
-				delete(g.subscribers, ch)
+				delete(subscribers, ch)
 			}
 		}
 	}
@@ -201,10 +254,15 @@ func (m *Manager) Begin(ctx context.Context, t *models.Trip) (string, error) {
 	return m.beginLocked(ctx, t, false)
 }
 
-func (m *Manager) BeginLive(ctx context.Context, t *models.Trip) (string, error) {
+// BeginNew always creates a session, regardless of the previous session's status.
+func (m *Manager) BeginNew(ctx context.Context, t *models.Trip) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.beginLocked(ctx, t, true)
+}
+
+func (m *Manager) BeginLive(ctx context.Context, t *models.Trip) (string, error) {
+	return m.Begin(ctx, t)
 }
 
 func (m *Manager) beginLocked(ctx context.Context, t *models.Trip, fresh bool) (string, error) {
@@ -214,10 +272,9 @@ func (m *Manager) beginLocked(ctx context.Context, t *models.Trip, fresh bool) (
 	}
 	if !fresh && len(g.Sessions) > 0 {
 		s := g.Sessions[0]
-		if s.Session.Status != "failed" && s.Session.Status != "completed" {
-			syncSession(&s.Session, t)
-			return s.Session.ID, nil
-		}
+		// Completion and retries belong to this trip. Only BeginNew starts another.
+		syncSession(&s.Session, t)
+		return s.Session.ID, nil
 	}
 	s := &Snapshot{Session: Session{ID: uuid.NewString(), GroupID: t.GroupID, Destination: "Planning your trip", Status: "created", CreatedAt: models.Now()}, Flight: "pending", Hotel: "pending", Planning: "pending", PlanningTasks: map[string]string{"flight-prices": "pending", "hotel-location": "pending", "group-budget": "pending", "daily-schedule": "pending"}, FlightMessage: "Waiting for your group’s destination choice", HotelMessage: "Waiting for your group’s destination choice", Flights: []map[string]any{}, Hotels: []map[string]any{}, Activity: []Activity{}, Previews: map[string]map[string]map[string]any{"flight": {}, "hotel": {}}}
 	syncSession(&s.Session, t)
@@ -244,9 +301,6 @@ func (m *Manager) SyncTrip(ctx context.Context, t *models.Trip) error {
 		return nil
 	}
 	s := g.Sessions[0]
-	if s.Session.Status == "completed" || s.Session.Status == "failed" {
-		return nil
-	}
 	syncSession(&s.Session, t)
 	return m.publishLocked(ctx, t.GroupID, g, s, "session.updated", nil)
 }
@@ -273,6 +327,11 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		return nil
 	}
 	s := g.Sessions[0]
+	if wire, ok := payload["event"].(map[string]any); ok {
+		if sessionID, _ := wire["session_id"].(string); sessionID != "" && sessionID != s.Session.ID {
+			return nil // An older search must not paint a newer planning session.
+		}
+	}
 	switch kind {
 	case "flight_search.started":
 		s.Flight = "running"
@@ -327,14 +386,33 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		s.FlightMessage = "Booking the selected flights"
 		s.Hotel = "running"
 		s.HotelMessage = "Booking the stay"
+	case "planning.started":
+		s.Planning = "running"
+		s.Session.Status = "planning"
+		s.Session.Message = "Building your itinerary."
+		if msg, ok := payload["message"].(string); ok && msg != "" {
+			s.Session.Message = msg
+		}
 	case "planning.task.updated":
 		task, _ := payload["taskId"].(string)
 		status, _ := payload["status"].(string)
 		if _, ok := s.PlanningTasks[task]; ok {
 			s.PlanningTasks[task] = status
+			if status == "running" {
+				s.Planning = "running"
+				s.Session.Status = "planning"
+			}
+			if msg, ok := payload["message"].(string); ok && msg != "" {
+				if s.PlanningTaskMessages == nil {
+					s.PlanningTaskMessages = map[string]string{}
+				}
+				s.PlanningTaskMessages[task] = msg
+				s.Session.Message = msg
+			}
 		}
 	case "planning.completed":
 		s.Planning = "completed"
+		s.Session.Message = "Your itinerary is ready. Finalizing your trip plan."
 		if plan, ok := payload["plan"].(map[string]any); ok {
 			s.Plan = plan
 		}
@@ -366,15 +444,27 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		agent, _ := payload["agentType"].(string)
 		wire, _ := payload["event"].(map[string]any)
 		origin, _ := wire["origin"].(string)
-		if origin == "" {
-			origin, _ = wire["website"].(string)
-		}
-		if origin == "" {
-			origin = "browser"
-		}
+		website, _ := wire["website"].(string)
 		browser, _ := wire["browser_session_id"].(string)
 		if agent != "flight" && agent != "hotel" {
 			return nil
+		}
+		if website == "" {
+			if agent == "flight" {
+				website = "google_flights"
+			} else {
+				website = origin
+			}
+		}
+		previewKey := website
+		if origin != "" && origin != website {
+			if previewKey != "" {
+				previewKey += ":"
+			}
+			previewKey += origin
+		}
+		if previewKey == "" {
+			previewKey = "browser"
 		}
 		if s.Previews == nil {
 			s.Previews = map[string]map[string]map[string]any{}
@@ -382,10 +472,12 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		if s.Previews[agent] == nil {
 			s.Previews[agent] = map[string]map[string]any{}
 		}
-		preview := s.Previews[agent][origin]
+		preview := s.Previews[agent][previewKey]
 		if preview == nil || preview["browserSessionId"] != browser {
 			preview = map[string]any{"browserSessionId": browser, "status": "starting"}
 		}
+		preview["website"] = website
+		preview["origin"] = origin
 		if kind == "agent.browser.frame" {
 			data, _ := wire["data"].(string)
 			mime, _ := wire["mime_type"].(string)
@@ -399,7 +491,7 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		} else {
 			preview["liveViewUrl"] = wire["url"]
 		}
-		s.Previews[agent][origin] = preview
+		s.Previews[agent][previewKey] = preview
 	}
 	return m.publishLocked(ctx, id, g, s, kind, payload)
 }

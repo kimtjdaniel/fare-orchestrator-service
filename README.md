@@ -4,6 +4,8 @@ The Go backend owns group planning and broadcasts progress to the frontend.
 
 ## Dashboard contract
 
+- `GET /dashboard/events`: dashboard-wide WebSocket, with an immediate `dashboard.snapshot` and live events from all groups.
+- `GET /dashboard/sessions`: planning session snapshots across all groups, newest first.
 - `GET /groups/{groupId}/events`: group-scoped WebSocket, with an immediate `group.snapshot`.
 - `GET /groups/{groupId}/sessions`: latest 20 planning session snapshots for the group.
 - `GET /groups/{groupId}/sessions/{sessionId}`: one group-scoped session snapshot.
@@ -14,10 +16,43 @@ the frontend shows a popup linking to `/dashboard/{groupId}/{sessionId}`. The
 backend still waits for the group's destination choice before starting searches.
 Frontend connections and reconnects do not start searches.
 
+Gemini routes conversational messages using the active trip, recent chat, and any
+quoted message. Explicit separate-trip requests such as `@Fare let's also plan a
+Paris trip` or `@Fare create a new session` create a fresh UUID session, even while
+the current trip awaits choice or approval. Clear standalone commands such as
+`@Fare plan a 7-night Tokyo trip ...` start a new session directly, including
+repeated requests with identical dates and destination. Commands referring to
+the current trip or its itinerary still use conversational routing.
+Follow-ups such as `yes`, `1`, searches,
+budget changes, and date revisions keep the same session through completion and
+retries. Starting searches does not create another session.
+
+For ambiguous requests such as `What about Paris?`, Fare asks whether to change
+the current trip or start a separate one. The pending request is stored in the
+trip's optional `pending_trip_request` field (`text`, `sender_name`, `sent_at`,
+`question`), and survives restarts with Mongo. Reply `continue this trip` or
+`new trip` to apply the original request; a bare `yes` repeats the routing question
+instead of approving the old trip. If classification fails, Fare asks for
+clarification before changing the trip.
+
+Repeating a standalone trip request starts another session. Webhook retries
+with the same `message_id` remain deduplicated. The latest request becomes the
+group's active trip; earlier dashboard snapshots remain available in its latest
+20 sessions. Only the latest trip is active for chat replies. Starting a new trip
+does not approve or cancel any previous booking.
+
 Every WebSocket event has `version: 1`, `type`, `groupId`, and `revision`.
+The dashboard snapshot uses an empty `groupId`; subsequent events retain their
+source group ID. Dashboard event revisions cover all groups, while group event
+revisions are scoped to the group.
 Session events also have `sessionId`, `session`, and `timestamp`. Normal progress
 events include the authoritative `snapshot`; browser events carry `agentType`
 and the travel service's original `event` payload.
+
+Browser previews include `website` and `origin`. Flight preview keys use
+`{website}:{origin}` (for example, `google_flights:YVR` and `kayak:YVR`), so
+simultaneous source browsers never replace each other. Hotel preview keys are
+`booking_com` and `airbnb`. Both sources stream independently for each agent.
 
 Events:
 
@@ -359,11 +394,14 @@ multi-source hotel search for Airbnb offers and recordings to appear.
 
 ## Flight sources
 
-The flight search service can return Google Flights and KAYAK fares in the same
+The flight search service can return Google Flights and Trip.com fares in the same
 `flights` list, with at most eight per website across the requested origins.
-`FlightOffer.source` identifies the provider; legacy rows without a source use
-`google_flights`. Optional `booking_url`, `return_duration`, `return_stops`,
-`return_departure_time`, and `return_arrival_time` preserve KAYAK's extra details.
+`FlightOffer.source` identifies the provider (`google_flights` or `trip_com`);
+legacy rows without a source use `google_flights`. Optional `return_duration`,
+`return_stops`, `return_departure_time`, and `return_arrival_time` preserve
+Trip.com's return-leg details. `booking_url` remains optional; the Trip.com adapter
+does not provide a verified reusable booking link. Saved historical `kayak` offers
+keep their original source; old results are not relabeled as Trip.com.
 The selected itinerary and stored flight legs retain source/link provenance;
 the dashboard's chosen plan exposes `flightSource`. Gemini compares supplied
 offers from both sites and selects their existing unique offer IDs.
@@ -373,3 +411,34 @@ their separate archive/replay links, errors, partial status, `warning`, and
 `resultsComplete`. The legacy single recording link remains available.
 The new dual-source implementation requires deploying the updated flight Lambda;
 existing service URLs and callback endpoints stay the same.
+
+## Deployed live browser previews
+
+Set `ORCHESTRATOR_PUBLIC_URL` to this backend's public HTTPS origin so the flight
+and hotel Lambdas can POST live updates back while their normal HTTP search runs.
+The orchestrator registers an opaque per-search callback ID and supplies both
+`callback_url` for the final result and `progress_callback_url` for live events:
+
+```text
+POST /travel-search/events/{requestID}
+POST /travel-search/results/{requestID}
+```
+
+Live events use the existing version-1 browser/search event envelope. The receiver
+checks the registered session and search IDs, limits JSON bodies to 2 MiB and
+base64 JPEG frames to 1 MiB, and forwards only recognized event fields. Final
+results end live delivery; returning or timing out the search also releases the
+listener. Final-result retries remain acknowledged for the existing 15-minute
+correlation window. Both callbacks must reach the same backend process; routing
+across replicas and callback recovery after a process restart are unsupported.
+
+Browser previews use `website:origin` keys when both fields differ, or the website
+(or origin) alone otherwise, and preserve both metadata fields. This keeps
+Google Flights and Trip.com previews separate for the same departure airport,
+and Booking.com and Airbnb separate for the same stay. Frontend support for
+these source keys and Lambda support for progress callbacks must also be deployed.
+
+A backend Git push alone does not configure its public URL. Without
+`ORCHESTRATOR_PUBLIC_URL`, HTTP searches still return final results and recordings
+but do not register live callbacks. Local `*_SERVICE_WS_URL` bridges continue to
+forward the same browser events directly. Real searches require `MOCK_TRAVEL=false`.

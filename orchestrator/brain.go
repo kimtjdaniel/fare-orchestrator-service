@@ -8,7 +8,7 @@
 //	                --yes--> search flights + hotel (live dashboard link) --> AWAITING_APPROVAL
 //	AWAITING_APPROVAL --✅--> book flights + hotel (Skyvern) --> BOOKED
 //	                  --❌--> back to AWAITING_CHOICE
-//	BOOKED/CANCELLED --@mention--> reset the same doc --> COLLECTING
+//	ANY STATE --explicit new trip request--> fresh dashboard session, reset doc --> COLLECTING
 package orchestrator
 
 import (
@@ -43,6 +43,7 @@ var (
 	bookAskRe     = regexp.MustCompile(`(?i)\bbook(?:ing)?\b`)
 	confirmPlanRe = regexp.MustCompile(`(?i)\b(plan(?:'s| is) good|looks good|sounds good|love (?:it|this|the plan)|let'?s (?:go|do (?:it|this)|book)|go (?:with|for) (?:that|this)|confirmed|confirm(?: the)? plan|initialize (?:the )?book|start (?:the )?(?:search|booking)|lock (?:this|it) in)\b`)
 	searchAskRe   = regexp.MustCompile(`(?i)\b((?:let'?s|lets|can we|please|go ahead(?: and)?|start|ready to|time to|we should)\s+(?:search|look up|find|scout)|search(?:ing)?(?:\s+\w+){0,5}\s*(?:flight|hotel|stay|fare)|how about (?:the )?flights?|lock(?:ing)? in (?:these |the |those )?(?:specific )?(?:property|flight|hotel|option))`)
+	newTripAskRe  = regexp.MustCompile(`(?i)\b(?:(?:plan|organize)\s+(?:a|an|another|new|separate)\s+(?:[\p{L}\p{N}-]+\s+){0,6}(?:trip|vacation|holiday)|(?:start|create|plan)\s+(?:a\s+)?(?:new|another|separate)\s+(?:trip|vacation|holiday|(?:planning\s+)?session)|(?:start|create)\s+(?:a|an)\s+(?:trip|vacation|holiday|(?:planning\s+)?session))\b`)
 	rejectOnlyRe  = regexp.MustCompile(`(?i)^\s*(❌|👎|no|nope)\s*!*\s*$`)
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
 	proxyPrefRe      = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
@@ -229,6 +230,10 @@ func looksLikeOnlyGreeting(text string) bool {
 
 func looksLikeSearchAsk(text string) bool {
 	return searchAskRe.MatchString(text)
+}
+
+func looksLikeNewTripRequest(text string) bool {
+	return newTripAskRe.MatchString(text)
 }
 
 func looksLikeDirectQuestion(text string) bool {
@@ -425,6 +430,10 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 	if !m.Tagged || strings.TrimSpace(m.Text) == "" {
 		return false
 	}
+	// Each explicit trip request gets its own session, even in a burst of group messages.
+	if looksLikeNewTripRequest(m.Text) {
+		return false
+	}
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
 		return false
 	}
@@ -558,7 +567,23 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"agent_id": m.AgentID,
 	})
 
+	if trip == nil && m.Tagged && looksLikeNewTripRequest(m.Text) {
+		return b.startNewTrip(ctx, nil, m, sentAt)
+	}
 	if trip != nil {
+		var handled bool
+		trip, m, handled, err = b.routeTripMessage(ctx, trip, m, sentAt)
+		if err != nil || handled {
+			return err
+		}
+	}
+
+	if trip != nil {
+		if b.Dashboard != nil && shouldBatchMention(m) && (trip.State == models.Collecting || trip.State == models.AwaitingChoice) {
+			if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+				return err
+			}
+		}
 		b.rememberRoster(ctx, trip, m)
 		trip, err = b.capturePayer(ctx, trip, m)
 		if err != nil {
@@ -570,6 +595,13 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		trip, err = b.Store.CreateTrip(ctx, m.GroupID, m.GroupName)
 		if err != nil {
 			return err
+		}
+		// Create the dashboard session before introductory replies or planning
+		// can fail. The frontend should see the request before searches begin.
+		if b.Dashboard != nil && shouldBatchMention(m) {
+			if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+				return err
+			}
 		}
 		b.rememberRoster(ctx, trip, m)
 		trip, err = b.capturePayer(ctx, trip, m)
@@ -684,7 +716,61 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 // ------------------------------------------------------------------ stage: plan
 
+// startNewTrip makes the latest request the group's active trip without requiring
+// approval or cancellation of the previous plan. Earlier dashboard snapshots remain intact.
+func (b *Brain) startNewTrip(ctx context.Context, previous *models.Trip, m models.IncomingMessage, sentAt time.Time) error {
+	groupName := m.GroupName
+	var roster []models.GroupMember
+	if previous != nil {
+		if groupName == "" {
+			groupName = previous.GroupName
+		}
+		roster = previous.Roster
+	}
+	var trip *models.Trip
+	var err error
+	if previous == nil {
+		trip, err = b.Store.CreateTrip(ctx, m.GroupID, groupName)
+	} else {
+		trip, err = b.Store.ResetTrip(ctx, previous.ID, groupName)
+	}
+	if err != nil {
+		return err
+	}
+	if trip == nil {
+		return fmt.Errorf("could not start a trip for group %s", m.GroupID)
+	}
+	// Include the triggering message and exclude the previous trip's conversation.
+	trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
+		"history_start": sentAt.Add(-time.Nanosecond),
+		"roster":        roster,
+	})
+	if err != nil {
+		return err
+	}
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.BeginNew(ctx, trip); err != nil {
+			return err
+		}
+	}
+	b.rememberRoster(ctx, trip, m)
+	trip, err = b.capturePayer(ctx, trip, m)
+	if err != nil {
+		return err
+	}
+	stop, trip, err := b.maybeIntroduce(ctx, trip, m)
+	if err != nil || stop {
+		return err
+	}
+	return b.plan(ctx, trip, m.Text, m)
+}
+
 func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
+	}
 	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 1000, true)
 	if err != nil {
 		return err
