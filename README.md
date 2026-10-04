@@ -359,11 +359,14 @@ multi-source hotel search for Airbnb offers and recordings to appear.
 
 ## Flight sources
 
-The flight search service can return Google Flights and KAYAK fares in the same
+The flight search service can return Google Flights and Trip.com fares in the same
 `flights` list, with at most eight per website across the requested origins.
-`FlightOffer.source` identifies the provider; legacy rows without a source use
-`google_flights`. Optional `booking_url`, `return_duration`, `return_stops`,
-`return_departure_time`, and `return_arrival_time` preserve KAYAK's extra details.
+`FlightOffer.source` identifies the provider (`google_flights` or `trip_com`);
+legacy rows without a source use `google_flights`. Optional `return_duration`,
+`return_stops`, `return_departure_time`, and `return_arrival_time` preserve
+Trip.com's return-leg details. `booking_url` remains optional; the Trip.com adapter
+does not provide a verified reusable booking link. Saved historical `kayak` offers
+keep their original source; old results are not relabeled as Trip.com.
 The selected itinerary and stored flight legs retain source/link provenance;
 the dashboard's chosen plan exposes `flightSource`. Gemini compares supplied
 offers from both sites and selects their existing unique offer IDs.
@@ -373,3 +376,34 @@ their separate archive/replay links, errors, partial status, `warning`, and
 `resultsComplete`. The legacy single recording link remains available.
 The new dual-source implementation requires deploying the updated flight Lambda;
 existing service URLs and callback endpoints stay the same.
+
+## Deployed live browser previews
+
+Set `ORCHESTRATOR_PUBLIC_URL` to this backend's public HTTPS origin so the flight
+and hotel Lambdas can POST live updates back while their normal HTTP search runs.
+The orchestrator registers an opaque per-search callback ID and supplies both
+`callback_url` for the final result and `progress_callback_url` for live events:
+
+```text
+POST /travel-search/events/{requestID}
+POST /travel-search/results/{requestID}
+```
+
+Live events use the existing version-1 browser/search event envelope. The receiver
+checks the registered session and search IDs, limits JSON bodies to 2 MiB and
+base64 JPEG frames to 1 MiB, and forwards only recognized event fields. Final
+results end live delivery; returning or timing out the search also releases the
+listener. Final-result retries remain acknowledged for the existing 15-minute
+correlation window. Both callbacks must reach the same backend process; routing
+across replicas and callback recovery after a process restart are unsupported.
+
+Browser previews use `website:origin` keys when both fields differ, or the website
+(or origin) alone otherwise, and preserve both metadata fields. This keeps
+Google Flights and Trip.com previews separate for the same departure airport,
+and Booking.com and Airbnb separate for the same stay. Frontend support for
+these source keys and Lambda support for progress callbacks must also be deployed.
+
+A backend Git push alone does not configure its public URL. Without
+`ORCHESTRATOR_PUBLIC_URL`, HTTP searches still return final results and recordings
+but do not register live callbacks. Local `*_SERVICE_WS_URL` bridges continue to
+forward the same browser events directly. Real searches require `MOCK_TRAVEL=false`.

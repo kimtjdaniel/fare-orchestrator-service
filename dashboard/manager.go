@@ -273,6 +273,11 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		return nil
 	}
 	s := g.Sessions[0]
+	if wire, ok := payload["event"].(map[string]any); ok {
+		if sessionID, _ := wire["session_id"].(string); sessionID != "" && sessionID != s.Session.ID {
+			return nil // An older search must not paint a newer planning session.
+		}
+	}
 	switch kind {
 	case "flight_search.started":
 		s.Flight = "running"
@@ -366,11 +371,16 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		agent, _ := payload["agentType"].(string)
 		wire, _ := payload["event"].(map[string]any)
 		origin, _ := wire["origin"].(string)
-		if origin == "" {
-			origin, _ = wire["website"].(string)
+		website, _ := wire["website"].(string)
+		key := origin
+		if website != "" {
+			key = website
+			if origin != "" && origin != website {
+				key += ":" + origin
+			}
 		}
-		if origin == "" {
-			origin = "browser"
+		if key == "" {
+			key = "browser"
 		}
 		browser, _ := wire["browser_session_id"].(string)
 		if agent != "flight" && agent != "hotel" {
@@ -382,10 +392,12 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		if s.Previews[agent] == nil {
 			s.Previews[agent] = map[string]map[string]any{}
 		}
-		preview := s.Previews[agent][origin]
+		preview := s.Previews[agent][key]
 		if preview == nil || preview["browserSessionId"] != browser {
 			preview = map[string]any{"browserSessionId": browser, "status": "starting"}
 		}
+		preview["website"] = website
+		preview["origin"] = origin
 		if kind == "agent.browser.frame" {
 			data, _ := wire["data"].(string)
 			mime, _ := wire["mime_type"].(string)
@@ -399,7 +411,7 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		} else {
 			preview["liveViewUrl"] = wire["url"]
 		}
-		s.Previews[agent][origin] = preview
+		s.Previews[agent][key] = preview
 	}
 	return m.publishLocked(ctx, id, g, s, kind, payload)
 }

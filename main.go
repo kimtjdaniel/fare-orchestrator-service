@@ -105,6 +105,7 @@ func main() {
 	mux := http.NewServeMux()
 	dashboardEvents.Register(mux)
 	mux.HandleFunc("POST /travel-search/results/{requestID}", tools.SearchResultsHandler)
+	mux.HandleFunc("POST /travel-search/events/{requestID}", tools.SearchEventsHandler)
 	mux.HandleFunc("GET /health", healthHandler(cfg))
 	mux.HandleFunc("POST /webhook", webhookHandler(brain))
 	mux.HandleFunc("POST /telegram/webhook", telegramWebhookHandler(cfg, brain))
