@@ -196,7 +196,27 @@ func (s *MongoStore) UpdateTrip(ctx context.Context, tripID string, fields map[s
 	if err := applyTripFields(trip, fields); err != nil {
 		return nil, err
 	}
-	_, err = s.trips.ReplaceOne(ctx, bson.D{{Key: "_id", Value: tripID}}, trip)
+
+	filter := bson.M{"_id": trip.ID}
+	if _, ok := fields["itinerary"]; ok {
+		if trip.ItineraryRevision == 1 {
+			filter["$or"] = bson.A{bson.M{"itinerary_revision": 0}, bson.M{"itinerary_revision": bson.M{"$exists": false}}}
+		} else {
+			filter["itinerary_revision"] = trip.ItineraryRevision - 1
+		}
+	}
+	updates := bson.M{"updated_at": trip.UpdatedAt}
+	for key, value := range fields {
+		updates[key] = value
+	}
+	if _, ok := fields["itinerary"]; ok {
+		updates["itinerary_revision"] = trip.ItineraryRevision
+	}
+	result, err := s.trips.UpdateOne(ctx, filter, bson.M{"$set": updates})
+	if err == nil && result.MatchedCount == 0 {
+		return nil, ErrItineraryConflict
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -222,4 +242,25 @@ func (s *MongoStore) SaveWhatsAppSession(ctx context.Context, id string, data ma
 		return nil, err
 	}
 	return sess, nil
+}
+
+func (s *MongoStore) UpdateItinerary(ctx context.Context, expected *models.Trip, itinerary map[string]any) (*models.Trip, error) {
+	filter := bson.M{"_id": expected.ID, "updated_at": expected.UpdatedAt}
+	if expected.ItineraryRevision == 0 {
+		filter["$or"] = bson.A{bson.M{"itinerary_revision": 0}, bson.M{"itinerary_revision": bson.M{"$exists": false}}}
+	} else {
+		filter["itinerary_revision"] = expected.ItineraryRevision
+	}
+	updated := *expected
+	if err := applyTripFields(&updated, map[string]any{"itinerary": itinerary}); err != nil {
+		return nil, err
+	}
+	result, err := s.trips.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"itinerary": itinerary, "itinerary_revision": updated.ItineraryRevision, "updated_at": updated.UpdatedAt}})
+	if err != nil {
+		return nil, err
+	}
+	if result.MatchedCount == 0 {
+		return nil, ErrItineraryConflict
+	}
+	return &updated, nil
 }

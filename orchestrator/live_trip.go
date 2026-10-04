@@ -80,6 +80,29 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		return b.dashboardPayload(ctx, fresh)
 	}
 
+	lock := b.lockFor(groupID)
+	lock.Lock()
+	defer lock.Unlock()
+	trip, err = b.Store.GetTrip(ctx, groupID)
+	if err != nil || trip == nil {
+		return nil, &DashboardError{Status: 404, Msg: "trip not found"}
+	}
+	if action == "update_activity" || action == "undo_activity_edit" {
+		body["action"] = action
+		updated, message, err := b.activityAction(ctx, trip, body)
+		if err != nil {
+			return nil, err
+		}
+		notificationErr := b.say(ctx, groupID, message, nil)
+		payload, err := b.dashboardPayload(ctx, updated)
+		if err != nil {
+			return nil, err
+		}
+		if notificationErr != nil {
+			payload["notification_warning"] = "The itinerary was saved, but the WhatsApp confirmation could not be completed."
+		}
+		return payload, nil
+	}
 	itin := cloneMap(trip.Itinerary)
 	if itin == nil {
 		itin = map[string]any{}
@@ -92,6 +115,7 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		if offer == nil {
 			return nil, &DashboardError{Status: 404, Msg: "flight offer not found"}
 		}
+		clearTravelReason(itin, "flight", strAny(offer["offer_id"]))
 		itin["selected_flight"] = offer
 		itin["selected_flight_id"] = strAny(offer["offer_id"])
 		var flight models.FlightOffer
@@ -133,6 +157,7 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		if offer == nil {
 			return nil, &DashboardError{Status: 404, Msg: "hotel offer not found"}
 		}
+		clearTravelReason(itin, "hotel", strAny(offer["offer_id"]))
 		itin["selected_hotel"] = offer
 		itin["selected_hotel_id"] = strAny(offer["offer_id"])
 		itin["hotel"] = offer
@@ -245,27 +270,33 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 }
 
 func (b *Brain) dashboardPayload(ctx context.Context, trip *models.Trip) (map[string]any, error) {
-	itin := trip.Itinerary
-	if itin == nil {
-		itin = map[string]any{}
+	itin := models.ScheduleItinerary(trip, trip.Itinerary, false)
+	currentID := ""
+	if b.Dashboard != nil {
+		currentID, _ = b.Dashboard.CurrentID(ctx, trip.GroupID)
 	}
 	spend := formatting.ComputeSpend(trip)
 	advisor := asMapAny(itin["advisor"])
 	msgs, _ := b.Store.GetMessages(ctx, trip.GroupID, nil, 80, true)
 	people := dashPeople(trip)
-	editable := trip.State != models.Booked && trip.State != models.Cancelled && trip.State != models.BookingState
+	editable := models.ScheduleEditable(trip)
 	return map[string]any{
-		"group_id":    trip.GroupID,
-		"group_name":  trip.GroupName,
-		"state":       trip.State,
-		"editable":    editable,
-		"destination": tripDestination(trip),
-		"origin":      trip.Origin,
-		"dates":       formatting.Dates(trip.EmbarkingDate, trip.ReturningDate),
-		"nights":      trip.DurationNights,
-		"budget_note": trip.BudgetNote,
-		"payer_name":  trip.PayerName,
-		"updated_at":  trip.UpdatedAt,
+		"group_id":               trip.GroupID,
+		"current_session_id":     currentID,
+		"itinerary_revision":     trip.ItineraryRevision,
+		"can_undo_activity_edit": itin["activity_edit_undo"] != nil,
+		"flight_reason":          models.SelectedTravelReason(itin, "flight"),
+		"hotel_reason":           models.SelectedTravelReason(itin, "hotel"),
+		"group_name":             trip.GroupName,
+		"state":                  trip.State,
+		"editable":               editable,
+		"destination":            tripDestination(trip),
+		"origin":                 trip.Origin,
+		"dates":                  formatting.Dates(trip.EmbarkingDate, trip.ReturningDate),
+		"nights":                 trip.DurationNights,
+		"budget_note":            trip.BudgetNote,
+		"payer_name":             trip.PayerName,
+		"updated_at":             trip.UpdatedAt,
 		"spend": map[string]any{
 			"flight_each":   spend.FlightEach,
 			"hotel_group":   spend.HotelGroup,
@@ -313,7 +344,7 @@ func dashDays(itin map[string]any) []map[string]any {
 			if title == "" && body == "" {
 				continue
 			}
-			out = append(out, map[string]any{"title": title, "body": body, "food_cad": numAny(d["food_cad"])})
+			out = append(out, map[string]any{"date": d["date"], "title": title, "body": body, "food_cad": numAny(d["food_cad"]), "activities": d["activities"]})
 		}
 	}
 	if advisor := asMapAny(itin["advisor"]); advisor != nil {
@@ -380,6 +411,7 @@ func dashViewFlights(itin map[string]any) []map[string]any {
 			"origin": strAny(m["origin"]), "destination": strAny(m["destination"]),
 			"summary": strAny(m["summary"]), "price": floatOr(m["price"]),
 			"selected": id != "" && id == selID,
+			"reason":   selectedRowReason(itin, "flight", id, selID),
 		})
 	}
 	push(asMapAny(itin["selected_flight"]))
@@ -417,6 +449,7 @@ func dashViewHotels(itin map[string]any) []map[string]any {
 			"original_rating": m["original_rating"], "original_rating_scale": m["original_rating_scale"],
 			"price_note": m["price_note"], "checkout_url": m["checkout_url"],
 			"selected": id != "" && id == selID,
+			"reason":   selectedRowReason(itin, "hotel", id, selID),
 		})
 	}
 	push(asMapAny(itin["selected_hotel"]))
@@ -589,4 +622,30 @@ func mapVal(m map[string]any, key string) map[string]any {
 		return nil
 	}
 	return asMapAny(m[key])
+}
+
+func selectedRowReason(itinerary map[string]any, kind, id, selectedID string) string {
+	if id == "" || id != selectedID {
+		return ""
+	}
+	return models.SelectedTravelReason(itinerary, kind)
+}
+
+func clearTravelReason(itinerary map[string]any, kind, offerID string) {
+	if strAny(itinerary["selected_"+kind+"_id"]) == offerID {
+		return
+	}
+	// Both recommendations may depend on the combined budget.
+	for _, source := range []string{"flight", "hotel"} {
+		delete(itinerary, source+"_reason")
+		delete(itinerary, source+"_reason_offer_id")
+	}
+	delete(itinerary, "selection_reason")
+	if existing := asMapAny(itinerary["dashboard_plan"]); existing != nil {
+		plan := cloneMap(existing)
+		delete(plan, "flightReason")
+		delete(plan, "hotelReason")
+		delete(plan, "selectionReason")
+		itinerary["dashboard_plan"] = plan
+	}
 }

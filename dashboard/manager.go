@@ -132,7 +132,27 @@ func (m *Manager) load(ctx context.Context, id string) (*group, error) {
 	if g.Sessions == nil {
 		g.Sessions = []*Snapshot{}
 	}
+
 	g.subscribers = map[chan []byte]bool{}
+	for index, snapshot := range g.Sessions {
+		if index > 0 && snapshot.Plan != nil {
+			snapshot.Plan["itineraryEditable"] = false
+			snapshot.Plan["canUndoActivityEdit"] = false
+		}
+	}
+	if len(g.Sessions) > 0 {
+		trip, err := m.store.GetTrip(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if trip != nil && trip.Itinerary != nil {
+			itinerary := models.ScheduleItinerary(trip, trip.Itinerary, false)
+			plan, _ := itinerary["dashboard_plan"].(map[string]any)
+			if days, _ := plan["days"].([]any); len(days) > 0 {
+				g.Sessions[0].Plan = plan
+			}
+		}
+	}
 	m.groups[id] = g
 	return g, nil
 }
@@ -278,6 +298,12 @@ func (m *Manager) beginLocked(ctx context.Context, t *models.Trip, fresh bool) (
 	}
 	s := &Snapshot{Session: Session{ID: uuid.NewString(), GroupID: t.GroupID, Destination: "Planning your trip", Status: "created", CreatedAt: models.Now()}, Flight: "pending", Hotel: "pending", Planning: "pending", PlanningTasks: map[string]string{"flight-prices": "pending", "hotel-location": "pending", "group-budget": "pending", "daily-schedule": "pending"}, FlightMessage: "Waiting for your group’s destination choice", HotelMessage: "Waiting for your group’s destination choice", Flights: []map[string]any{}, Hotels: []map[string]any{}, Activity: []Activity{}, Previews: map[string]map[string]map[string]any{"flight": {}, "hotel": {}}}
 	syncSession(&s.Session, t)
+	for _, previous := range g.Sessions {
+		if previous.Plan != nil {
+			previous.Plan["itineraryEditable"] = false
+			previous.Plan["canUndoActivityEdit"] = false
+		}
+	}
 	g.Sessions = append([]*Snapshot{s}, g.Sessions...)
 	if len(g.Sessions) > 20 {
 		g.Sessions = g.Sessions[:20]
@@ -302,6 +328,14 @@ func (m *Manager) SyncTrip(ctx context.Context, t *models.Trip) error {
 	}
 	s := g.Sessions[0]
 	syncSession(&s.Session, t)
+	if t.Itinerary != nil {
+		itinerary := models.ScheduleItinerary(t, t.Itinerary, false)
+		if plan, ok := itinerary["dashboard_plan"].(map[string]any); ok {
+			if days, _ := plan["days"].([]any); len(days) > 0 {
+				s.Plan = plan
+			}
+		}
+	}
 	return m.publishLocked(ctx, t.GroupID, g, s, "session.updated", nil)
 }
 func (m *Manager) CurrentID(ctx context.Context, id string) (string, error) {
@@ -410,6 +444,10 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 				s.Session.Message = msg
 			}
 		}
+	case "itinerary.updated":
+		if plan, ok := payload["plan"].(map[string]any); ok {
+			s.Plan = plan
+		}
 	case "planning.completed":
 		s.Planning = "completed"
 		s.Session.Message = "Your itinerary is ready. Finalizing your trip plan."
@@ -510,5 +548,15 @@ func (s *Store) UpdateTrip(ctx context.Context, id string, fields map[string]any
 	if err = s.Dashboard.SyncTrip(ctx, t); err != nil {
 		return t, err
 	}
+	return t, nil
+}
+
+func (s *Store) UpdateItinerary(ctx context.Context, expected *models.Trip, itinerary map[string]any) (*models.Trip, error) {
+	t, err := s.Store.UpdateItinerary(ctx, expected, itinerary)
+	if err != nil {
+		return t, err
+	}
+	// Persistence succeeded. A dashboard delivery error must not invite a duplicate edit.
+	_ = s.Dashboard.SyncTrip(ctx, t)
 	return t, nil
 }

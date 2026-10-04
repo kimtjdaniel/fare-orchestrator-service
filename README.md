@@ -392,6 +392,32 @@ Lambda. Set `MOCK_TRAVEL=false` and leave `HOTEL_SERVICE_WS_URL` empty to invoke
 the deployed hotel service over HTTP. Its deployed code must include the
 multi-source hotel search for Airbnb offers and recordings to appear.
 
+## Itinerary activity edits
+
+The active trip's activities can be edited from WhatsApp or the dashboard. For
+example, `@Fare move dinner on day 2 to 7:30pm` updates the matching activity;
+ambiguous requests ask for a more specific activity. `@Fare undo itinerary edit`
+restores the schedule before the last edit. Activities remain suggestions, not
+confirmed reservations or verified opening hours.
+
+Dashboard activity actions use the existing `POST /dashboard/trips/{groupId}`:
+
+```json
+{
+  "action": "update_activity",
+  "activity_id": "saved-activity-id",
+  "expected_revision": "3",
+  "time": "19:30",
+  "session_id": "active-session-id"
+}
+```
+
+`title` and `description` are also editable. `undo_activity_edit` uses the same
+revision and session fields. Times use local `HH:MM`. A stale revision or session
+returns a conflict rather than overwriting another edit. The saved advisor and
+dashboard schedule stay in sync; undo restores only the previous schedule.
+Flight and hotel searches are not rerun for activity edits.
+
 ## Flight sources
 
 Current flight searches use Google Flights only and return up to 15 cheapest
@@ -443,3 +469,17 @@ A backend Git push alone does not configure its public URL. Without
 `ORCHESTRATOR_PUBLIC_URL`, HTTP searches still return final results and recordings
 but do not register live callbacks. Local `*_SERVICE_WS_URL` bridges continue to
 forward the same browser events directly. Real searches require `MOCK_TRAVEL=false`.
+
+## Travel recommendation reasons
+
+The existing travel-selection Gemini call returns separate `flight_reason` and
+`hotel_reason` justifications, bound to the selected offer IDs. They appear below
+the respective prices in WhatsApp and as `flightReason` / `hotelReason` on the
+final dashboard plan. Selected rows in the live trip view expose `reason`.
+Recommendations use supplied prices, preferences and offer details; they do not
+verify hotel neighborhoods, amenities, layover durations or return itineraries.
+Selecting a different flight or stay clears both reasons and the combined
+selection explanation, since either recommendation may depend on the total
+budget. Selecting the same offer retains them. Activity edits and undo preserve
+only reasons whose offer IDs still match. Existing plans without reasons remain
+viewable; no additional model calls or travel-service changes are required.

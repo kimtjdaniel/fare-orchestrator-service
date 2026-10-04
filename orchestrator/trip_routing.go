@@ -36,6 +36,10 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		return trip, m, false, nil
 	}
 	text := strings.TrimSpace(b.mentionRe.ReplaceAllString(m.Text, ""))
+
+	if pending == nil && looksLikeTripActivityEdit(trip, text) {
+		return trip, m, false, nil
+	}
 	obviousReply := choiceOnlyRe.MatchString(text) || approveOnlyRe.MatchString(text) || rejectOnlyRe.MatchString(text)
 	if pending == nil && quotedText(m) == "" && (obviousReply || looksLikeOnlyGreeting(text) || looksLikeIntroAsk(text) || looksLikeDashboardAsk(text)) {
 		return trip, m, false, nil

@@ -465,7 +465,7 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 		return false
 	}
 	// Each explicit trip request gets its own session, even in a burst of group messages.
-	if looksLikeNewTripRequest(m.Text) {
+	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) {
 		return false
 	}
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
@@ -655,6 +655,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		return b.runIntakeTurn(ctx, trip, m)
 	}
 
+	if looksLikeTripActivityEdit(trip, m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
+		return b.editActivityMessage(ctx, trip, m)
+	}
 	if trip.State == models.Booked {
 		if looksLikeAdvisorAsk(m.Text) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
 			return b.answerDuringIntake(ctx, trip, m)
@@ -1653,23 +1656,29 @@ func (b *Brain) generateAdvisorItinerary(ctx context.Context, trip *models.Trip,
 	if err != nil {
 		return trip, nil, err
 	}
-	itin := trip.Itinerary
+
+	itin := cloneMap(trip.Itinerary)
 	if itin == nil {
 		itin = map[string]any{}
 	}
 	itin["advisor"] = out
-	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
-		"itinerary":       itin,
-		"duration_nights": days,
-		"destination":     dest,
-	})
+	delete(itin, "activity_edit_undo")
+	itin = models.ScheduleItinerary(trip, itin, true)
+	if plan := asMapAny(itin["dashboard_plan"]); plan != nil {
+		plan["itineraryRevision"] = trip.ItineraryRevision + 1
+	}
+	updated, err := b.Store.UpdateItinerary(ctx, trip, itin)
 	if err != nil {
 		return trip, nil, err
 	}
-	if updated != nil {
-		trip = updated
+	trip, err = b.Store.UpdateTrip(ctx, updated.ID, map[string]any{"duration_nights": days, "destination": dest})
+	if err != nil {
+		return updated, nil, err
 	}
-	return trip, out, nil
+	if err = b.dashboardEvent(ctx, trip, "itinerary.updated", map[string]any{"plan": itin["dashboard_plan"]}); err != nil {
+		return trip, nil, err
+	}
+	return trip, asMapAny(itin["advisor"]), nil
 }
 
 func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
@@ -2082,14 +2091,18 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 			"embarking":       embarkOffer,
 			"returning":       returnOffer,
 		},
-		"hotel":              hotel,
-		"per_person":         preview.PerPerson,
-		"group_total":        preview.GroupTotal,
-		"flight_options":     offers,
-		"hotel_options":      hotels,
-		"selected_flight_id": offer.OfferID,
-		"selected_hotel_id":  hotel.OfferID,
-		"selection_reason":   selectionReason,
+		"hotel":                  hotel,
+		"per_person":             preview.PerPerson,
+		"group_total":            preview.GroupTotal,
+		"flight_options":         offers,
+		"hotel_options":          hotels,
+		"selected_flight_id":     offer.OfferID,
+		"selected_hotel_id":      hotel.OfferID,
+		"selection_reason":       selectionReason.Combined,
+		"flight_reason":          selectionReason.Flight,
+		"hotel_reason":           selectionReason.Hotel,
+		"flight_reason_offer_id": offer.OfferID,
+		"hotel_reason_offer_id":  hotel.OfferID,
 	})
 	if err != nil {
 		return err
