@@ -288,6 +288,21 @@ func nextMissingField(trip *models.Trip) string {
 	return ""
 }
 
+func headcountOf(f models.FieldValue) (int, bool) {
+	switch n := f.Value.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 func fieldSatisfied(trip *models.Trip, field string) bool {
 	intake := trip.Intake
 	if intake == nil {
@@ -549,6 +564,8 @@ type intakeExtraction struct {
 	Approval                string         `json:"approval"`
 	NeedsClarificationField string         `json:"needs_clarification_field"`
 	NeedsClarificationWhy   string         `json:"needs_clarification_why"`
+	SourceText              string         `json:"-"`
+	SenderName              string         `json:"-"`
 }
 
 func (b *Brain) extractIntake(ctx context.Context, trip *models.Trip, text, senderWaID string) (*intakeExtraction, error) {
