@@ -77,11 +77,16 @@ func (b *Brain) dashboardOnce(ctx context.Context, trip *models.Trip) string {
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
+	}
 	link := b.tripPageURL(ctx, trip)
 	if link == "" {
 		return b.say(ctx, trip.GroupID, "I don't have a trip page set up to send.", nil)
 	}
-	text := "This group's live trip: " + link
+	text := "Watch the flight and hotel agents live:\n" + link + "\nItinerary, money, and chat stay in sync on that page."
 	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
 		return err
 	}
