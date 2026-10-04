@@ -28,7 +28,7 @@ Conversation rules:
 Actions:
 reply: answer a question, greeting or clarification in reply, grounded in supplied facts. Ask at most one missing question. Do not promise a write or search with this action.
 ignore: no response or changes.
-new_trip: explicitly start a separate planning session.
+new_trip: explicitly start a separate planning session, even when only a destination is known. Include planning with known facts and the next missing question when possible; missing travelers, dates or preferences never prevent session creation.
 clarify_trip: ask in reply whether the original request changes this trip or starts a separate one.
 plan: record preferences or revise the plan, including destination/date/origin/budget corrections and answers to planning questions. Do not use for a question about the existing plan.
 choose: select a currently offered destination by its exact option_number. A short number can select only a destination option that was actually just offered, not a day or poll of another kind.
@@ -151,12 +151,14 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 	case "reply":
 		return b.sayReply(ctx, trip.GroupID, decision.Reply)
 	case "new_trip":
-		if decision.Planning == nil {
-			return fmt.Errorf("new trip action returned no trip inputs")
-		}
+		// Session creation does not require the model to supply a complete plan.
+		// If it omitted planning, collect known facts in the new session instead.
 		// The first mention must retain the background chat just adopted into
 		// this empty session instead of resetting it out of the model's context.
 		if trip.State == models.Collecting && len(trip.Participants) == 0 && len(trip.Options) == 0 && trip.Destination == "" {
+			if decision.Planning == nil {
+				return b.plan(ctx, trip, m.Text, m)
+			}
 			return b.applyChatPlan(ctx, trip, decision.Planning)
 		}
 		return b.startNewTripWithPlan(ctx, trip, m, sentAt, decision.Planning)
