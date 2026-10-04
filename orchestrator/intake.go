@@ -90,6 +90,8 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 	if extraction == nil {
 		extraction = &intakeExtraction{TripIntent: "none"}
 	}
+	extraction.SourceText = m.Text
+	extraction.SenderName = m.SenderName
 	if trip.PendingQuestion != nil && fieldSatisfied(trip, trip.PendingQuestion.Field) {
 		extraction.AnswersPendingQuestion = true
 	}
@@ -111,9 +113,13 @@ func (b *Brain) runIntakePollVote(ctx context.Context, trip *models.Trip, vote m
 	if poll == nil {
 		return nil
 	}
+	hosts := hostIDs(vote.AgentID, vote.AgentIDs...)
+	if isHost(vote.VoterID, hosts) {
+		return nil
+	}
 	trip = b.recordPollVote(ctx, trip, poll, vote)
 
-	complete := pollComplete(trip, poll)
+	complete := pollComplete(trip, poll, hosts)
 	stale := time.Since(poll.CreatedAt) > pollWaitTimeout
 	if !complete && !stale {
 		return nil
@@ -199,9 +205,15 @@ func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extractio
 		if searchEssentials(trip) {
 			return b.handoffToSearch(ctx, trip)
 		}
+		if extraction != nil && strings.TrimSpace(extraction.SourceText) != "" {
+			return b.answerQuestion(ctx, trip, models.IncomingMessage{SenderName: extraction.SenderName, Text: extraction.SourceText, Tagged: true})
+		}
 		return nil
 	}
 	if hasOpenIntakePoll(trip, missing) {
+		if extraction != nil && strings.TrimSpace(extraction.SourceText) != "" {
+			return b.answerQuestion(ctx, trip, models.IncomingMessage{SenderName: extraction.SenderName, Text: extraction.SourceText, Tagged: true})
+		}
 		return nil
 	}
 	return b.askField(ctx, trip, missing)
@@ -280,6 +292,21 @@ func nextMissingField(trip *models.Trip) string {
 	return ""
 }
 
+func headcountOf(f models.FieldValue) (int, bool) {
+	switch n := f.Value.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	default:
+		return 0, false
+	}
+}
+
 func fieldSatisfied(trip *models.Trip, field string) bool {
 	intake := trip.Intake
 	if intake == nil {
@@ -299,10 +326,13 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 				coming++
 			}
 		}
-		if coming < 1 {
-			return false
-		}
-		if unknown == 0 {
+	if coming < 1 {
+		return false
+	}
+	if n, ok := headcountOf(intake.Headcount); ok && n <= 1 {
+		return true
+	}
+	if unknown == 0 {
 			return true
 		}
 		// A closed attendance poll means everyone who is going has had a chance to say so.
@@ -538,6 +568,8 @@ type intakeExtraction struct {
 	Approval                string         `json:"approval"`
 	NeedsClarificationField string         `json:"needs_clarification_field"`
 	NeedsClarificationWhy   string         `json:"needs_clarification_why"`
+	SourceText              string         `json:"-"`
+	SenderName              string         `json:"-"`
 }
 
 func (b *Brain) extractIntake(ctx context.Context, trip *models.Trip, text, senderWaID string) (*intakeExtraction, error) {
@@ -737,6 +769,20 @@ func (b *Brain) applyChatShortcuts(ctx context.Context, trip *models.Trip, m mod
 		if soloTravelerRe.MatchString(text) && !intake.Headcount.Known() {
 			intake.Headcount = models.FieldValue{Value: float64(1), Confidence: models.Confirmed, UpdatedAt: models.Now()}
 			changed = true
+		}
+		if soloTravelerRe.MatchString(text) {
+			for i := range trip.Participants {
+				if trip.Participants[i].WaID == m.SenderID {
+					continue
+				}
+				if trip.Participants[i].Intake == nil {
+					trip.Participants[i].Intake = &models.ParticipantIntake{}
+				}
+				if trip.Participants[i].Intake.Attendance == "" || trip.Participants[i].Intake.Attendance == "unknown" {
+					trip.Participants[i].Intake.Attendance = "not_coming"
+					changed = true
+				}
+			}
 		}
 	}
 	if (h.City != "" || h.Airport != "") && (pending == fOrigin || originCueRe.MatchString(text)) {
@@ -1375,14 +1421,16 @@ func (b *Brain) postIntakePoll(ctx context.Context, trip *models.Trip, field, qu
 		}
 	}
 
-	expected := make([]string, 0, len(trip.Participants))
-	people := comingParticipants(trip)
-	if field == fAttendance {
-		people = trip.Participants
-	}
-	for _, p := range people {
-		if p.WaID != "" {
-			expected = append(expected, p.WaID)
+	expected := pollVotersNeeded(trip, nil, nil)
+	if len(expected) == 0 {
+		people := comingParticipants(trip)
+		if field == fAttendance {
+			people = trip.Participants
+		}
+		for _, p := range people {
+			if p.WaID != "" {
+				expected = append(expected, p.WaID)
+			}
 		}
 	}
 	poll := models.IntakePoll{
@@ -1443,26 +1491,80 @@ func pollHasSelection(votes map[string][]string) bool {
 	return false
 }
 
-func pollComplete(trip *models.Trip, poll *models.IntakePoll) bool {
-	if poll == nil || !pollHasSelection(poll.Votes) {
+func pollComplete(trip *models.Trip, poll *models.IntakePoll, hosts []string) bool {
+	if poll == nil || !pollHasSelection(nonHostVotes(poll.Votes, hosts)) {
 		return false
 	}
-	if len(poll.ExpectedVoters) == 0 || len(comingParticipants(trip)) <= 1 {
+	needed := pollVotersNeeded(trip, poll, hosts)
+	if len(needed) <= 1 {
 		return true
 	}
-	matched, unmatched := 0, 0
-	for _, id := range poll.ExpectedVoters {
-		if len(pollVoteSelection(poll.Votes, id)) > 0 {
-			matched++
-		} else {
-			unmatched++
+	return distinctVoters(poll.Votes, hosts) >= len(needed)
+}
+
+func nonHostVotes(votes map[string][]string, hosts []string) map[string][]string {
+	out := map[string][]string{}
+	for id, sel := range votes {
+		if isHost(id, hosts) {
+			continue
+		}
+		out[id] = sel
+	}
+	return out
+}
+
+func pollVotersNeeded(trip *models.Trip, poll *models.IntakePoll, hosts []string) []string {
+	var ids []string
+	if trip != nil && len(trip.Roster) > 0 {
+		ids = neededIDs(humanRoster(trip, nil, "", "", "", hosts...))
+	}
+	if len(ids) == 0 && poll != nil {
+		ids = append(ids, poll.ExpectedVoters...)
+	}
+	if len(ids) == 0 && trip != nil {
+		for _, p := range trip.Participants {
+			if p.WaID != "" {
+				ids = append(ids, p.WaID)
+			}
 		}
 	}
-	if unmatched == 0 {
-		return true
+	var out []string
+	for _, id := range ids {
+		if id == "" || isHost(id, hosts) {
+			continue
+		}
+		dup := false
+		for _, existing := range out {
+			if samePerson(existing, id) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, id)
+		}
 	}
-	// Roster ids and the vote id differ (@lid vs @c.us). Don't wait forever.
-	return matched == 0
+	return out
+}
+
+func distinctVoters(votes map[string][]string, hosts []string) int {
+	var seen []string
+	for id, sel := range votes {
+		if isHost(id, hosts) || len(sel) == 0 || strings.TrimSpace(sel[0]) == "" {
+			continue
+		}
+		dup := false
+		for _, existing := range seen {
+			if samePerson(existing, id) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			seen = append(seen, id)
+		}
+	}
+	return len(seen)
 }
 
 // closePollAndApply applies every recorded vote to the relevant intake field (poll votes are
@@ -1913,9 +2015,10 @@ func (b *Brain) clearPendingQuestion(ctx context.Context, trip *models.Trip) *mo
 // participants from the group roster and runs extraction over recent history (spec §2.1 steps
 // 1-2), so anything already said before "@Fare plan a trip" is captured before the first question.
 func (b *Brain) seedIntake(ctx context.Context, trip *models.Trip, m models.IncomingMessage) *models.Trip {
+	hosts := hostIDs(m.AgentID, m.AgentIDs...)
 	participants := append([]models.Participant(nil), trip.Participants...)
 	for _, member := range m.Participants {
-		if member.IsAgent {
+		if member.IsAgent || isHost(member.ID, hosts) {
 			continue
 		}
 		findOrCreateParticipantIndex(&participants, member.ID)
@@ -1925,10 +2028,12 @@ func (b *Brain) seedIntake(ctx context.Context, trip *models.Trip, m models.Inco
 			}
 		}
 	}
-	findOrCreateParticipantIndex(&participants, m.SenderID)
-	for i := range participants {
-		if participants[i].WaID == m.SenderID && participants[i].WhatsAppName == "" {
-			participants[i].WhatsAppName = m.SenderName
+	if !isHost(m.SenderID, hosts) {
+		findOrCreateParticipantIndex(&participants, m.SenderID)
+		for i := range participants {
+			if participants[i].WaID == m.SenderID && participants[i].WhatsAppName == "" {
+				participants[i].WhatsAppName = m.SenderName
+			}
 		}
 	}
 

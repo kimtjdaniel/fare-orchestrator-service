@@ -6,8 +6,10 @@ import (
 	"fare-brain/llm"
 	"fare-brain/models"
 	"fare-brain/prompts"
+	"fare-brain/store"
 	"fare-brain/tools"
 	"fmt"
+	"strings"
 )
 
 func (b *Brain) dashboardEvent(ctx context.Context, t *models.Trip, kind string, payload map[string]any) error {
@@ -67,6 +69,9 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 	}
 	user := fmt.Sprintf("Destination: %s\nStart date: %s\nEnd date: %s\nDays: %d\nGroup preferences: %s\nBudget note: %s\nLOCKED FACTS: %s\nInclude local timed activities from 08:00 to 21:00 for each full day, leaving sensible free time and respecting arrival timing. Do not invent travel prices.", t.Destination, t.EmbarkingDate, t.ReturningDate, t.DurationNights, formatKnownPrefs(t.Participants), t.BudgetNote, string(facts))
 	user += "\nSelected travel plan: " + string(selected) + "\nBuild activities around these selected offers and the group's interests. Account for flight arrival, hotel check-in, transfers and departure. Include every date through the return date, using partial schedules on travel days. Activity suggestions are estimates, not confirmed bookings or verified opening hours."
+	if flight.OfferID == "skipped" {
+		user += "\nFlights were skipped. Do not invent flights or fares. Plan each day around the hotel."
+	}
 	out, err := b.LLM.Structured(ctx, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")), []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
 	if err != nil {
 		return err
@@ -139,6 +144,11 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 	}
 	go func() {
 		defer close(flightDone)
+		if !validIATA(origin) || !validIATA(destAP) || !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
+			flightErr = fmt.Errorf("flight search needs airport codes and dates (origin %q, destination %q, %s to %s)", origin, destAP, option.EmbarkingDate, option.ReturningDate)
+			_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": flightErr.Error()})
+			return
+		}
 		if err := b.dashboardEvent(ctx, t, "flight_search.started", map[string]any{"message": "Flight agent started"}); err != nil {
 			flightErr = err
 			return
@@ -168,4 +178,182 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 	<-flightDone
 	<-hotelDone
 	return flights, hotels, flightErr, hotelErr
+}
+
+func validIATA(code string) bool {
+	if len(code) != 3 {
+		return false
+	}
+	for _, r := range code {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// RetryFlightSearch runs the flight agent again for the group's current trip.
+func (b *Brain) RetryFlightSearch(ctx context.Context, groupID string) error {
+	trip, err := b.Store.GetTrip(ctx, groupID)
+	if err != nil || trip == nil {
+		return &DashboardError{Status: 404, Msg: "trip not found"}
+	}
+	option := trip.ChosenOption()
+	if option == nil && len(trip.Options) > 0 {
+		option = &trip.Options[0]
+	}
+	if option == nil {
+		return &DashboardError{Status: 400, Msg: "There is no destination to search yet."}
+	}
+	origin := originAirportCode(trip.Origin, trip.Participants)
+	dest := option.DestinationAirport
+	if cands := destAirportCandidates(dest, option.Destination); len(cands) > 0 {
+		dest = cands[0]
+	} else if cands := destAirportCandidates("", trip.Destination); len(cands) > 0 {
+		dest = cands[0]
+	}
+	if !validIATA(origin) || !validIATA(dest) || !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
+		msg := fmt.Sprintf("Flight search needs airport codes and dates. Origin is %q, destination is %q, dates are %s to %s.", blank(origin), blank(dest), blank(option.EmbarkingDate), blank(option.ReturningDate))
+		_ = b.dashboardEvent(ctx, trip, "flight_search.failed", map[string]any{"message": msg})
+		return &DashboardError{Status: 400, Msg: msg}
+	}
+	go b.runFlightSearch(context.Background(), trip, origin, dest, option.EmbarkingDate, option.ReturningDate)
+	return nil
+}
+
+func blank(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "missing"
+	}
+	return s
+}
+
+func (b *Brain) runFlightSearch(ctx context.Context, t *models.Trip, origin, dest, depart, ret string) {
+	if b.Dashboard != nil {
+		if sessionID, err := b.Dashboard.Begin(ctx, t); err == nil {
+			ctx = tools.WithSearchEvents(ctx, sessionID, func(kind string, payload map[string]any) { _ = b.dashboardEvent(ctx, t, kind, payload) })
+		}
+	}
+	if err := b.dashboardEvent(ctx, t, "flight_search.started", map[string]any{"message": "Retrying the flight search."}); err != nil {
+		return
+	}
+	flights, err := tools.SearchFlights(ctx, b.Config, origin, dest, depart, ret)
+	if err != nil {
+		_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": err.Error()})
+		return
+	}
+	if len(flights) == 0 {
+		_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": "The flight search finished without any fares."})
+		return
+	}
+	_ = b.dashboardEvent(ctx, t, "flight_search.completed", map[string]any{"flights": dashboardFlights(flights), "message": fmt.Sprintf("Found %d flight options", len(flights))})
+	fresh, err := b.Store.GetTrip(ctx, t.GroupID)
+	if err != nil || fresh == nil {
+		return
+	}
+	hotels := pendingHotels(fresh)
+	if len(hotels) == 0 {
+		return
+	}
+	option := fresh.ChosenOption()
+	if option == nil && len(fresh.Options) > 0 {
+		option = &fresh.Options[0]
+	}
+	if option == nil {
+		return
+	}
+	_ = b.lockSearchedPlan(ctx, fresh, option, fresh.Participants, flights, hotels, false)
+}
+
+func (b *Brain) rememberPendingHotels(ctx context.Context, trip *models.Trip, hotels []models.HotelOffer) error {
+	itin := map[string]any{}
+	for k, v := range trip.Itinerary {
+		itin[k] = v
+	}
+	raw, err := json.Marshal(hotels)
+	if err != nil {
+		return err
+	}
+	var rows []any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return err
+	}
+	itin["pending_hotels"] = rows
+	_, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"itinerary": itin})
+	return err
+}
+
+func pendingHotels(trip *models.Trip) []models.HotelOffer {
+	if trip == nil || trip.Itinerary == nil {
+		return nil
+	}
+	raw, ok := trip.Itinerary["pending_hotels"]
+	if !ok || raw == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var hotels []models.HotelOffer
+	if json.Unmarshal(encoded, &hotels) != nil {
+		return nil
+	}
+	return hotels
+}
+
+func cheapestHotel(hotels []models.HotelOffer) models.HotelOffer {
+	best := hotels[0]
+	for _, hotel := range hotels[1:] {
+		if hotel.TotalPrice > 0 && (best.TotalPrice == 0 || hotel.TotalPrice < best.TotalPrice) {
+			best = hotel
+		}
+	}
+	return best
+}
+
+// SkipFlights keeps the saved stays and continues the itinerary without a fare.
+func (b *Brain) SkipFlights(ctx context.Context, groupID string) error {
+	trip, err := b.Store.GetTrip(ctx, groupID)
+	if err != nil || trip == nil {
+		return &DashboardError{Status: 404, Msg: "trip not found"}
+	}
+	hotels := pendingHotels(trip)
+	if len(hotels) == 0 {
+		return &DashboardError{Status: 400, Msg: "There is no saved stay to continue with."}
+	}
+	option := trip.ChosenOption()
+	if option == nil && len(trip.Options) > 0 {
+		option = &trip.Options[0]
+	}
+	if option == nil {
+		return &DashboardError{Status: 400, Msg: "There is no destination to plan yet."}
+	}
+	go b.continueWithoutFlights(context.Background(), trip.GroupID)
+	return nil
+}
+
+func (b *Brain) continueWithoutFlights(ctx context.Context, groupID string) {
+	trip, err := b.Store.GetTrip(ctx, groupID)
+	if err != nil || trip == nil {
+		return
+	}
+	if trip.State == models.AwaitingChoice {
+		trip, err = store.SetState(ctx, b.Store, trip.ID, models.Searching, nil)
+		if err != nil || trip == nil {
+			return
+		}
+	}
+	hotels := pendingHotels(trip)
+	option := trip.ChosenOption()
+	if option == nil && len(trip.Options) > 0 {
+		option = &trip.Options[0]
+	}
+	if option == nil || len(hotels) == 0 {
+		return
+	}
+	_ = b.dashboardEvent(ctx, trip, "flight_search.completed", map[string]any{"flights": []map[string]any{}, "message": "Flights skipped. Planning continues with the stay."})
+	if err := b.lockSearchedPlan(ctx, trip, option, trip.Participants, nil, hotels, true); err != nil {
+		_ = b.say(ctx, trip.GroupID, err.Error(), nil)
+	}
 }

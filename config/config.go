@@ -76,6 +76,25 @@ func firstNonEmpty(vals ...string) string {
 	return ""
 }
 
+func joinGeminiKeys() string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(raw string) {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" || seen[part] {
+				continue
+			}
+			seen[part] = true
+			out = append(out, part)
+		}
+	}
+	add(getenv("GEMINI_API_KEY", ""))
+	add(getenv("GEMINI_API_KEYS", ""))
+	add(getenv("GOOGLE_API_KEY", ""))
+	return strings.Join(out, ",")
+}
+
 func intEnv(name string, def int) int {
 	v := getenv(name, "")
 	if v == "" {
@@ -115,7 +134,7 @@ func Load() *Settings {
 		MockBrowser:             boolEnv("MOCK_BROWSER", true),
 		MockBookingDelaySeconds: floatEnv("MOCK_BOOKING_DELAY", 3),
 
-		GeminiAPIKey: firstNonEmpty(getenv("GEMINI_API_KEY", ""), getenv("GOOGLE_API_KEY", "")),
+		GeminiAPIKey: joinGeminiKeys(),
 		GeminiModel:  getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
 		LLMCacheDir:  getenv("LLM_CACHE_DIR", ""),
 

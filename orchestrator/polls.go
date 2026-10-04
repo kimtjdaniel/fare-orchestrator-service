@@ -461,6 +461,29 @@ func dateList(start, end time.Time) []string {
 	return out
 }
 
+func (b *Brain) humanPollReady(trip *models.Trip, vote models.PollVote) bool {
+	hosts := hostIDs(vote.AgentID, vote.AgentIDs...)
+	if isHost(vote.VoterID, hosts) || strings.TrimSpace(vote.VoterID) == "" || len(vote.SelectedOptions) == 0 {
+		return false
+	}
+	key := vote.GroupID + "\n" + vote.PollMessageID
+	b.ballotMu.Lock()
+	defer b.ballotMu.Unlock()
+	if b.ballots == nil {
+		b.ballots = map[string]map[string][]string{}
+	}
+	if b.ballots[key] == nil {
+		b.ballots[key] = map[string][]string{}
+	}
+	b.ballots[key][vote.VoterID] = vote.SelectedOptions
+	needed := pollVotersNeeded(trip, nil, hosts)
+	if len(needed) <= 1 || distinctVoters(b.ballots[key], hosts) >= len(needed) {
+		delete(b.ballots, key)
+		return true
+	}
+	return false
+}
+
 func (b *Brain) HandlePollVote(ctx context.Context, vote models.PollVote) {
 	if vote.GroupID == "" {
 		return
@@ -499,6 +522,9 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 		return b.handleChangeVote(ctx, trip, vote, selected)
 	}
 	if selected == "" {
+		return nil
+	}
+	if !b.humanPollReady(trip, vote) {
 		return nil
 	}
 	sentAt := time.Now().UTC()

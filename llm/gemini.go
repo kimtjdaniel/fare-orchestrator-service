@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,8 @@ const geminiAPIBase = "https://generativelanguage.googleapis.com/v1beta/models"
 // fresh calls.
 type GeminiLLM struct {
 	APIKey     string
+	APIKeys    []string
+	keyIdx     atomic.Uint32
 	Model      string
 	CacheDir   string
 	HTTPClient *http.Client
@@ -36,7 +39,36 @@ func NewGeminiLLM(apiKey, model, cacheDir string) *GeminiLLM {
 	if model == "" {
 		model = "gemini-3.1-flash-lite"
 	}
-	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 75 * time.Second}}
+	keys := splitKeys(apiKey)
+	primary := ""
+	if len(keys) > 0 {
+		primary = keys[0]
+	}
+	return &GeminiLLM{APIKey: primary, APIKeys: keys, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 75 * time.Second}}
+}
+
+func splitKeys(raw string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
+func (g *GeminiLLM) keys() []string {
+	if len(g.APIKeys) > 0 {
+		return g.APIKeys
+	}
+	if strings.TrimSpace(g.APIKey) != "" {
+		return []string{g.APIKey}
+	}
+	return nil
 }
 
 func (g *GeminiLLM) modelsToTry() []string {
@@ -134,67 +166,77 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 	slog.Info("prompting gemini", "kind", kind, "model", g.Model, "bytes", len(payload), "preview", preview)
 
 	var lastErr error
+	keys := g.keys()
+	if len(keys) == 0 {
+		keys = []string{g.APIKey}
+	}
+	start := 0
+	if n := len(keys); n > 0 {
+		start = int(g.keyIdx.Add(1)-1) % n
+	}
 	for _, model := range g.modelsToTry() {
 		for attempt := 1; attempt <= 4; attempt++ {
-			endpoint := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, model, url.QueryEscape(g.APIKey))
-			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-			if err != nil {
-				return nil, err
-			}
-			httpReq.Header.Set("content-type", "application/json")
+			busy := false
+			for i := 0; i < len(keys); i++ {
+				apiKey := keys[(start+i)%len(keys)]
+				endpoint := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, model, url.QueryEscape(apiKey))
+				httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+				if err != nil {
+					return nil, err
+				}
+				httpReq.Header.Set("content-type", "application/json")
 
-			httpResp, err := g.HTTPClient.Do(httpReq)
-			if err != nil {
-				lastErr = err
-				slog.Warn("gemini request failed", "kind", kind, "model", model, "attempt", attempt, "err", err)
-				if attempt < 4 {
-					select {
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					case <-time.After(time.Duration(attempt) * time.Second):
-					}
+				httpResp, err := g.HTTPClient.Do(httpReq)
+				if err != nil {
+					lastErr = err
+					slog.Warn("gemini request failed", "kind", kind, "model", model, "attempt", attempt, "err", err)
+					busy = true
+					break
+				}
+				raw, err := io.ReadAll(httpResp.Body)
+				httpResp.Body.Close()
+				if err != nil {
+					return nil, err
+				}
+				if httpResp.StatusCode == http.StatusTooManyRequests || httpResp.StatusCode == http.StatusServiceUnavailable {
+					var apiErr geminiError
+					_ = json.Unmarshal(raw, &apiErr)
+					lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
+					slog.Warn("gemini busy, retrying", "kind", kind, "model", model, "attempt", attempt, "status", httpResp.StatusCode, "key_slot", (start+i)%len(keys))
+					busy = true
 					continue
+				}
+				if httpResp.StatusCode >= 400 {
+					var apiErr geminiError
+					_ = json.Unmarshal(raw, &apiErr)
+					lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
+					slog.Warn("gemini rejected model, trying next", "model", model, "status", httpResp.StatusCode, "err", apiErr.Error.Message)
+					busy = false
+					break
+				}
+
+				var resp geminiResponse
+				if err := json.Unmarshal(raw, &resp); err != nil {
+					return nil, err
+				}
+				slog.Info("llm call", "kind", kind, "model", model, "elapsed", time.Since(t0),
+					"in", resp.UsageMetadata.PromptTokenCount, "out", resp.UsageMetadata.CandidatesTokenCount)
+				if cachePath != "" {
+					_ = os.WriteFile(cachePath, raw, 0o644)
+				}
+				return &resp, nil
+			}
+			if !busy || attempt == 4 {
+				if !busy {
+					break
 				}
 				break
 			}
-			raw, err := io.ReadAll(httpResp.Body)
-			httpResp.Body.Close()
-			if err != nil {
-				return nil, err
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(time.Duration(attempt) * time.Second):
 			}
-			if httpResp.StatusCode == http.StatusTooManyRequests || httpResp.StatusCode == http.StatusServiceUnavailable {
-				var apiErr geminiError
-				_ = json.Unmarshal(raw, &apiErr)
-				lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
-				slog.Warn("gemini busy, retrying", "kind", kind, "model", model, "attempt", attempt, "status", httpResp.StatusCode)
-				if attempt < 4 {
-					select {
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					case <-time.After(time.Duration(attempt*2) * time.Second):
-					}
-					continue
-				}
-				break
-			}
-			if httpResp.StatusCode >= 400 {
-				var apiErr geminiError
-				_ = json.Unmarshal(raw, &apiErr)
-				lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
-				slog.Warn("gemini rejected model, trying next", "model", model, "status", httpResp.StatusCode, "err", apiErr.Error.Message)
-				break
-			}
-
-			var resp geminiResponse
-			if err := json.Unmarshal(raw, &resp); err != nil {
-				return nil, err
-			}
-			slog.Info("llm call", "kind", kind, "model", model, "elapsed", time.Since(t0),
-				"in", resp.UsageMetadata.PromptTokenCount, "out", resp.UsageMetadata.CandidatesTokenCount)
-			if cachePath != "" {
-				_ = os.WriteFile(cachePath, raw, 0o644)
-			}
-			return &resp, nil
 		}
 	}
 	if lastErr == nil {

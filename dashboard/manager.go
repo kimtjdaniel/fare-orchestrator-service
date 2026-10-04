@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -371,7 +372,12 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		s.Flight = "running"
 		s.FlightMessage = "Searching flights"
 		s.Session.Status = "searching"
-		s.Session.Message = "Your flight and hotel agents are searching."
+		s.Error = nil
+		if msg, ok := payload["message"].(string); ok && msg != "" {
+			s.Session.Message = msg
+		} else {
+			s.Session.Message = "Your flight and hotel agents are searching."
+		}
 	case "hotel_search.started":
 		s.Hotel = "running"
 		s.HotelMessage = "Searching stays"
@@ -386,8 +392,19 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		}
 	case "flight_search.failed":
 		s.Flight = "failed"
-		if msg, ok := payload["message"].(string); ok {
-			s.FlightMessage = msg
+		msg, _ := payload["message"].(string)
+		if msg == "" {
+			msg = "Flight search failed."
+		}
+		s.FlightMessage = msg
+		if s.Hotel == "failed" {
+			s.Session.Status = "failed"
+			s.Session.Message = msg
+			s.Error = nil
+		} else {
+			s.Session.Status = "searching"
+			s.Session.Message = "Flights didn't come back. Retry the flight search, or skip it and keep the stay."
+			s.Error = nil
 		}
 	case "hotel_search.failed":
 		s.Hotel = "failed"
@@ -400,6 +417,14 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 			s.Flights = rows
 		}
 		s.FlightMessage = fmt.Sprintf("Found %d flight options", len(s.Flights))
+		if msg, ok := payload["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			s.FlightMessage = msg
+		}
+		if s.Session.Status == "failed" && s.Hotel != "failed" {
+			s.Session.Status = "searching"
+			s.Error = nil
+			s.Session.Message = s.FlightMessage
+		}
 	case "hotel_search.completed":
 		s.Hotel = "completed"
 		if rows, ok := payload["hotels"].([]map[string]any); ok {
@@ -463,6 +488,10 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		}
 		s.Session.Status = "failed"
 		msg, _ := payload["message"].(string)
+		if msg == "" {
+			msg = "Trip planning was interrupted."
+		}
+		s.Session.Message = msg
 		s.Error = &msg
 		if s.Flight == "running" {
 			s.Flight = "failed"

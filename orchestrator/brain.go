@@ -78,6 +78,8 @@ type Brain struct {
 	locks     map[string]*sync.Mutex
 	batchMu   sync.Mutex
 	batches   map[string]*taggedBatch
+	ballotMu  sync.Mutex
+	ballots   map[string]map[string][]string
 }
 
 type taggedBatch struct {
@@ -539,9 +541,6 @@ func (b *Brain) handleLocked(ctx context.Context, m models.IncomingMessage) {
 	ctx = messaging.WithReplyTo(ctx, m.MessageID)
 
 	if err := b.handle(ctx, m); err != nil {
-		if b.Dashboard != nil {
-			_ = b.Dashboard.Emit(ctx, m.GroupID, "session.failed", map[string]any{"message": "Trip planning could not finish. Please try again in the group chat."})
-		}
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
 		if sayErr := b.say(ctx, m.GroupID, geminiFailTalk(err), nil); sayErr != nil {
 			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
@@ -601,6 +600,12 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"agent_id": m.AgentID,
 	})
 
+	if trip != nil {
+		handled, err := b.dispatchTurn(ctx, trip, m, sentAt)
+		if err != nil || handled {
+			return err
+		}
+	}
 	if trip == nil && m.Tagged && looksLikeNewTripRequest(m.Text) {
 		return b.startNewTrip(ctx, nil, m, sentAt)
 	}
@@ -1352,30 +1357,47 @@ func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.
 	if trip == nil || !m.Tagged {
 		return false, trip, nil
 	}
-	force := looksLikeIntroAsk(m.Text)
-	if !force && trip.Introduced {
+	// The capability list is only for "who are you" / "introduce yourself".
+	// A reply like "it'd be me and Brandon" is the trip, not a greeting.
+	if !looksLikeIntroAsk(m.Text) {
+		if !trip.Introduced {
+			var err error
+			trip, err = b.markIntroduced(ctx, trip)
+			if err != nil {
+				return true, trip, err
+			}
+		}
 		return false, trip, nil
 	}
 	if err := b.say(ctx, trip.GroupID, formatting.IntroMessage(b.Config.BotName), nil); err != nil {
 		return true, trip, err
 	}
-	if !trip.Introduced {
-		updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"introduced": true})
-		if err != nil {
-			return true, trip, err
-		}
-		if updated != nil {
-			trip = updated
-		} else {
-			trip.Introduced = true
-		}
+	var err error
+	trip, err = b.markIntroduced(ctx, trip)
+	if err != nil {
+		return true, trip, err
 	}
-	onlyIntro := looksLikeIntroAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
+	onlyIntro := !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
 		!looksLikeStatusAsk(m.Text) && !looksLikeDashboardAsk(m.Text) && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants)
-	if onlyIntro || looksLikeOnlyGreeting(m.Text) {
+	if onlyIntro {
 		return true, trip, nil
 	}
 	return false, trip, nil
+}
+
+func (b *Brain) markIntroduced(ctx context.Context, trip *models.Trip) (*models.Trip, error) {
+	if trip == nil || trip.Introduced {
+		return trip, nil
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"introduced": true})
+	if err != nil {
+		return trip, err
+	}
+	if updated != nil {
+		return updated, nil
+	}
+	trip.Introduced = true
+	return trip, nil
 }
 
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
@@ -2007,6 +2029,15 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	if option.DurationNights == 0 {
 		option.DurationNights = tripNights(trip, "")
 	}
+	if trip.State == models.Collecting {
+		updated, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
+		if err != nil {
+			return err
+		}
+		if updated != nil {
+			trip = updated
+		}
+	}
 	trip, err := store.SetState(ctx, b.Store, trip.ID, models.Searching, nil)
 	if err != nil {
 		return err
@@ -2029,10 +2060,10 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	originAirport := originAirportCode(trip.Origin, people)
 
 	offers, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
-	if flightErr != nil || len(offers) == 0 || hotelErr != nil || len(hotels) == 0 {
-		message := "No matching flight and hotel combination was found. Choose another option in the group chat."
-		if flightErr != nil || hotelErr != nil {
-			message = "A travel search could not finish. Please try another option in the group chat."
+	if hotelErr != nil || len(hotels) == 0 {
+		message := "No stay was found. Choose another option in the group chat."
+		if hotelErr != nil {
+			message = hotelErr.Error()
 		}
 		if err := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); err != nil {
 			return err
@@ -2042,27 +2073,65 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 		}
 		return b.say(ctx, trip.GroupID, message, nil)
 	}
+	if flightErr != nil || len(offers) == 0 {
+		if err := b.rememberPendingHotels(ctx, trip, hotels); err != nil {
+			return err
+		}
+		message := "Flights didn't come back. The stay search is saved. Retry flights, or skip them and I'll keep planning around the hotel."
+		if flightErr != nil {
+			message = flightErr.Error() + " Retry flights, or skip them and I'll keep planning around the hotel."
+		}
+		if err := b.dashboardEvent(ctx, trip, "flight_search.failed", map[string]any{"message": message}); err != nil {
+			return err
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
+	}
+	return b.lockSearchedPlan(ctx, trip, option, people, offers, hotels, false)
+}
+
+func (b *Brain) lockSearchedPlan(ctx context.Context, trip *models.Trip, option *models.Option, people []models.Participant, offers []models.FlightOffer, hotels []models.HotelOffer, skipFlights bool) error {
 	if err := b.dashboardEvent(ctx, trip, "planning.started", map[string]any{"message": "Building your itinerary"}); err != nil {
 		return err
 	}
-	if err := b.dashboardTask(ctx, trip, "flight-prices", "running", "Comparing flight prices"); err != nil {
+	flightNote := "Comparing flight prices"
+	if skipFlights {
+		flightNote = "Flights skipped"
+	}
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "running", flightNote); err != nil {
 		return err
 	}
 	if err := b.dashboardTask(ctx, trip, "hotel-location", "running", "Choosing a hotel in your destination"); err != nil {
 		return err
 	}
-	offer, hotel, selectionReason, err := b.selectTravelPlan(ctx, trip, offers, hotels)
-	if err != nil {
-		message := "Travel options arrived, but the trip planner could not select a plan. Please choose the option again to retry."
-		if eventErr := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); eventErr != nil {
-			return eventErr
+	var offer models.FlightOffer
+	var hotel models.HotelOffer
+	var selectionReason travelSelectionReasons
+	var err error
+	if skipFlights || len(offers) == 0 {
+		hotel = cheapestHotel(hotels)
+		offer = models.FlightOffer{OfferID: "skipped", Airline: "Skipped", Summary: "Flights skipped", Currency: "CAD", Origin: originAirportCode(trip.Origin, people), Destination: option.DestinationAirport}
+		selectionReason = travelSelectionReasons{
+			Hotel:    "This stay was selected by total price from the saved hotel results; flights are excluded.",
+			Combined: "Flights were skipped. The stay stays in the plan without a fare.",
 		}
-		if _, stateErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); stateErr != nil {
-			return stateErr
+	} else {
+		offer, hotel, selectionReason, err = b.selectTravelPlan(ctx, trip, offers, hotels)
+		if err != nil {
+			message := "Travel options arrived, but the trip planner could not select a plan. Please choose the option again to retry."
+			if eventErr := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); eventErr != nil {
+				return eventErr
+			}
+			if _, stateErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); stateErr != nil {
+				return stateErr
+			}
+			return b.say(ctx, trip.GroupID, message, nil)
 		}
-		return b.say(ctx, trip.GroupID, message, nil)
 	}
-	if err := b.dashboardTask(ctx, trip, "flight-prices", "completed", "Selected the flight that best fits the group’s plan"); err != nil {
+	flightDone := "Selected the flight that best fits the group’s plan"
+	if skipFlights || offer.OfferID == "skipped" {
+		flightDone = "Flights skipped"
+	}
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "completed", flightDone); err != nil {
 		return err
 	}
 	if err := b.dashboardTask(ctx, trip, "hotel-location", "completed", "Selected a stay to match the group’s preferences and budget"); err != nil {
@@ -2085,25 +2154,28 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	embarkOffer := offer
 	returnOffer := offer.ReturningOffer()
 
-	itinMap, err := structToMap(map[string]any{
-		"flights": map[string]any{
+	planBody := map[string]any{
+		"hotel":                 hotel,
+		"per_person":            preview.PerPerson,
+		"group_total":           preview.GroupTotal,
+		"hotel_options":         hotels,
+		"selected_hotel_id":     hotel.OfferID,
+		"selection_reason":      selectionReason.Combined,
+		"hotel_reason":          selectionReason.Hotel,
+		"hotel_reason_offer_id": hotel.OfferID,
+	}
+	if offer.OfferID != "skipped" {
+		planBody["flights"] = map[string]any{
 			"round_trip_each": offer.Price,
 			"embarking":       embarkOffer,
 			"returning":       returnOffer,
-		},
-		"hotel":                  hotel,
-		"per_person":             preview.PerPerson,
-		"group_total":            preview.GroupTotal,
-		"flight_options":         offers,
-		"hotel_options":          hotels,
-		"selected_flight_id":     offer.OfferID,
-		"selected_hotel_id":      hotel.OfferID,
-		"selection_reason":       selectionReason.Combined,
-		"flight_reason":          selectionReason.Flight,
-		"hotel_reason":           selectionReason.Hotel,
-		"flight_reason_offer_id": offer.OfferID,
-		"hotel_reason_offer_id":  hotel.OfferID,
-	})
+		}
+		planBody["flight_options"] = offers
+		planBody["selected_flight_id"] = offer.OfferID
+		planBody["flight_reason"] = selectionReason.Flight
+		planBody["flight_reason_offer_id"] = offer.OfferID
+	}
+	itinMap, err := structToMap(planBody)
 	if err != nil {
 		return err
 	}
@@ -2117,9 +2189,12 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	ed, _ := models.ParseDate(option.EmbarkingDate)
 	rd, _ := models.ParseDate(option.ReturningDate)
 	half := offer.Price / 2
-	flights := []models.Flight{
-		{Direction: models.Embarking, BookingStatus: models.StatusIncomplete, DepartingDate: ed, ArrivalDate: ed, Costs: &half, Source: offer.Source, BookingURL: offer.BookingURL},
-		{Direction: models.Returning, BookingStatus: models.StatusIncomplete, DepartingDate: rd, ArrivalDate: rd, Costs: &half, Source: offer.Source, BookingURL: offer.BookingURL},
+	var flights []models.Flight
+	if offer.OfferID != "skipped" {
+		flights = []models.Flight{
+			{Direction: models.Embarking, BookingStatus: models.StatusIncomplete, DepartingDate: ed, ArrivalDate: ed, Costs: &half, Source: offer.Source, BookingURL: offer.BookingURL},
+			{Direction: models.Returning, BookingStatus: models.StatusIncomplete, DepartingDate: rd, ArrivalDate: rd, Costs: &half, Source: offer.Source, BookingURL: offer.BookingURL},
+		}
 	}
 	accommodations := []models.Accommodation{{
 		BookingStatus: models.StatusIncomplete, CheckInDate: ed, CheckOutDate: rd,
@@ -2134,13 +2209,20 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 			cp := each
 			opts[i].CostPerPerson = &cp
 			opts[i].DestinationAirport = offer.Destination
+			if offer.OfferID == "skipped" && option.DestinationAirport != "" {
+				opts[i].DestinationAirport = option.DestinationAirport
+			}
 		}
 	}
 
+	destAirport := offer.Destination
+	if offer.OfferID == "skipped" {
+		destAirport = option.DestinationAirport
+	}
 	trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingApproval, map[string]any{
 		"itinerary": itinMap, "flights": flights, "accommodations": accommodations,
-		"cost_per_person": each, "options": opts, "destination_airport": offer.Destination,
-		"flights_locked": true,
+		"cost_per_person": each, "options": opts, "destination_airport": destAirport,
+		"flights_locked": offer.OfferID != "skipped",
 	})
 	if err != nil {
 		return err
@@ -2188,6 +2270,22 @@ func destAirportCandidates(airport, dest string) []string {
 	}
 	if strings.Contains(blob, "lisbon") || airport == "LIS" {
 		add("LIS")
+	}
+	if strings.Contains(blob, "japan") || strings.Contains(blob, "tokyo") {
+		add("NRT")
+		add("HND")
+	}
+	if strings.Contains(blob, "london") {
+		add("LHR")
+		add("LGW")
+	}
+	if strings.Contains(blob, "paris") {
+		add("CDG")
+	}
+	for city, code := range cityAirport {
+		if strings.Contains(blob, city) {
+			add(code)
+		}
 	}
 	if strings.Contains(blob, "ital") || strings.Contains(blob, "amalfi") || strings.Contains(blob, "naples") || strings.Contains(blob, "puglia") || airport == "NAP" || airport == "BRI" {
 		add("NAP")

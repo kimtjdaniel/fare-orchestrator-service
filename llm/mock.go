@@ -126,6 +126,9 @@ func (m *MockLLM) Structured(ctx context.Context, system string, messages []Mess
 			"approval":                 approval,
 		}, nil
 
+	case "turn_route":
+		return map[string]any{"action": ""}, nil
+
 	case "intake_writer":
 		var slot string
 		if len(messages) > 0 {
