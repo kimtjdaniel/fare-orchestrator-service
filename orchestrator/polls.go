@@ -80,10 +80,10 @@ func (b *Brain) tripPageURL(ctx context.Context, trip *models.Trip, sessionID st
 func (b *Brain) shareLiveSearch(ctx context.Context, trip *models.Trip, sessionID string) error {
 	link := b.tripPageURL(ctx, trip, sessionID)
 	if link == "" {
-		return b.say(ctx, trip.GroupID, "I don't have a trip page set up to send.", nil)
+		return b.sayExact(ctx, trip.GroupID, "Your flight and stay searches have started. A trip-page link isn't configured.", nil)
 	}
-	text := "Watch the flight and hotel search live:\n" + link
-	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
+	text := fmt.Sprintf("Your %s session is live. Follow the flight and stay searches here:\n%s", tripDestination(trip), link)
+	if err := b.sayExact(ctx, trip.GroupID, text, nil); err != nil {
 		return err
 	}
 	_, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"shared_dashboard": true})
@@ -92,13 +92,13 @@ func (b *Brain) shareLiveSearch(ctx context.Context, trip *models.Trip, sessionI
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
 	if trip.State != models.Searching && trip.State != models.BookingState && trip.State != models.AwaitingApproval && trip.State != models.Booked {
-		return b.say(ctx, trip.GroupID, "I'll send the live search page after the group finalizes the plan.", nil)
+		return b.startReadySearch(ctx, trip, 0)
 	}
 	return b.shareLiveSearch(ctx, trip, "")
 }
 
 func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string, options []models.Option) error {
-	if err := b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, ""), optionButtons(options)); err != nil {
+	if err := b.sayExact(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, ""), optionButtons(options)); err != nil {
 		return err
 	}
 	return b.pollOptions(ctx, trip, options)
@@ -117,7 +117,7 @@ func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen model
 
 func (b *Brain) shareItinerary(ctx context.Context, trip *models.Trip) error {
 	url := b.tripPageURL(ctx, trip, "")
-	return b.say(ctx, trip.GroupID, formatting.SummaryMessage(models.Option{}, nil, nil, trip.ID, url), nil)
+	return b.sayExact(ctx, trip.GroupID, formatting.SummaryMessage(models.Option{}, nil, nil, trip.ID, url), nil)
 }
 
 func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []models.Participant) error {

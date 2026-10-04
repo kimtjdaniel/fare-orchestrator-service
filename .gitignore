@@ -8,3 +8,4 @@ __pycache__/
 .llm_cache/
 CLAUDE.local.md
 /yate-brain
+.env.production

@@ -16,6 +16,7 @@ When you address a specific person, @mention them with their exact roster displa
 Only share dashboard URLs supplied by the application; never invent booking/checkout links. Never say you are sending a photo. If they ask for a hotel or a restaurant, name the place — the app sends a Google Maps pin separately.
 For a quick reply: 1-3 sentences. For an itinerary or advice: a readable day-by-day layout with blank lines, "Day 1 — ...", morning/afternoon/evening in short lines. No bullet dumps of prices.
 Don't open with "Great question". Ask at most one question, and only if something is actually missing.
+Never say "I'll get back to you", "get back to you shortly", "I'll send it later", or promise a later update. Ask for a missing requirement now, or report an action the backend has actually started and include its supplied link.
 You only plan trips and share itineraries. Never offer to book, ask for booking approval, collect payment or travel documents, or claim a booking was made. Once the itinerary is ready, share its link and say thank you.`
 
 func ExtractSystem(today string) string {
@@ -69,8 +70,9 @@ The user content supplies current_trip, latest_message and requested_change as J
 If they cancelled a previous city, do not mention that city except one short acknowledgement.
 Do both in one JSON response:
 1) Record each human's preferences from the chat (whatsapp_name is internal JSON; in intro/missing_info you may @Their Full Name from the roster).
-2) If you have enough to propose a trip (at least origin + overlapping dates), also fill intro and 2-3 options.
-If anything important is missing, leave options empty and put ONE plain group question in missing_info.
+2) Prepare only the inputs needed to start the backend session: travelers, their departure cities/airports, a destination and exact departure/return dates. If the destination is specified, return one option immediately. If it is undecided, suggest 2-3 destinations using the stated preferences, without researching them.
+The backend's flight and stay services do all searches and availability checks. Do not check flights yourself, estimate fares, compare hotels, build a day-by-day itinerary, or seek an extra confirmation before starting. Budget, food, vibe and other optional preferences must be retained when supplied, but must not delay a session whose travelers, origins, destination and dates are known.
+If a required input is missing, leave options empty and put ONE plain group question in missing_info. Once the required inputs are complete, missing_info must be empty.
 
 Attribution: people often speak for others. Put facts on the person they are about.
 - "I know Tom's schedule, he's not available that date" -> Tom is busy then, not the speaker.
@@ -78,7 +80,7 @@ Attribution: people often speak for others. Put facts on the person they are abo
 - "we all leave from YVR" -> every participant.
 whatsapp_name: roster display names for the JSON only. Skip the bot. Never invent people.
 Return complete resolved preferences for every known participant. Retain current_trip.preferences except where the latest message corrects them; remove dates explicitly ruled out instead of merging them back. Preserve flight preferences, including is_direct=false when layovers are now acceptable. Only apply a shared origin when the group actually stated one; never copy one person's origin to everyone else. If departure cities or dates are still unknown for travelers, ask one precise question in missing_info. Do not ask for anything already known. Never invent dates, use a default weekend, assume attendance, or force a destination poll when the destination is already specified.
-When a destination is specified, return one concrete option for it. Otherwise suggest 2-3 options. Honor requested revisions using the latest constraints. All dates must fit every traveler's stated availability. No option may have dates before today or a return date at/before departure. Prices in proposals are rough estimates, never live quotes. If there is not enough information to form an option, return options=[] and one useful question in missing_info.
+When a destination is specified, return one concrete option for it. Otherwise suggest 2-3 options. Honor requested revisions using the latest constraints. All dates must fit every traveler's stated availability. No option may have dates before today or a return date at/before departure. Do not supply cost_per_person: prices come from the search services. If there is not enough information to form an option, return options=[] and one useful question in missing_info.
 intro / missing_info / why_it_works / tradeoffs: spoken to the group. If you need one person, write @Their Full Name from the roster. Never WhatsApp IDs or phones.
 Negative dates: if someone is not free on a date, omit it from their availability.`, botName, today, ChatVoice)
 }
@@ -274,6 +276,26 @@ var ProposeOptions = map[string]any{
 	},
 }
 
+// Intake only needs search inputs. It does not ask the model for fares or a finished plan.
+var PlanOptions = map[string]any{
+	"type": "array",
+	"items": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"destination":          map[string]any{"type": "string"},
+			"destination_airport":  map[string]any{"type": "string", "description": "Main IATA code for the stated city"},
+			"embarking_date":       map[string]any{"type": "string", "description": "YYYY-MM-DD"},
+			"returning_date":       map[string]any{"type": "string", "description": "YYYY-MM-DD"},
+			"activity_description": map[string]any{"type": "string"},
+			"culinary_description": map[string]any{"type": "string"},
+			"why_it_works":         map[string]any{"type": "string"},
+			"tradeoffs":            map[string]any{"type": "string"},
+		},
+		"required":             []string{"destination", "destination_airport", "embarking_date", "returning_date"},
+		"additionalProperties": false,
+	},
+}
+
 var PlanTrip = map[string]any{
 	"name": "plan_trip",
 	"schema": map[string]any{
@@ -282,7 +304,7 @@ var PlanTrip = map[string]any{
 			"participants": RecordPreferences["schema"].(map[string]any)["properties"].(map[string]any)["participants"],
 			"missing_info": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"intro":        map[string]any{"type": "string", "description": "1-2 spoken sentences to the group. Empty if missing_info. No names or @tags."},
-			"options":      ProposeOptions["schema"].(map[string]any)["properties"].(map[string]any)["options"],
+			"options":      PlanOptions,
 			"budget_note":  map[string]any{"type": "string", "description": "Complete current budget and what it covers, with currency. Preserve the existing budget unless explicitly corrected. Empty if unknown."},
 		},
 		"required":             []string{"participants", "missing_info"},

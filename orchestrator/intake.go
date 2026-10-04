@@ -1080,9 +1080,8 @@ func (b *Brain) seedIntake(ctx context.Context, trip *models.Trip, m models.Inco
 
 // ------------------------------------------------------------------ handoff (§9)
 
-// handoffToSearch builds a single Option from the completed intake data and routes through the
-// existing, unmodified AwaitingChoice-onward pipeline (lockChosenOption + offerPlanFinalize —
-// which itself sends a day-by-day plan and a "Finalize this plan?" poll before any real search).
+// handoffToSearch builds a single option from completed intake and starts the
+// search services without an extra itinerary draft or confirmation poll.
 func (b *Brain) handoffToSearch(ctx context.Context, trip *models.Trip) error {
 	for i := range trip.Participants {
 		p := &trip.Participants[i]

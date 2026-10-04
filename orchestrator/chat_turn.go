@@ -9,6 +9,7 @@ import (
 
 	"fare-brain/llm"
 	"fare-brain/models"
+	"fare-brain/prompts"
 	"fare-brain/store"
 )
 
@@ -21,6 +22,8 @@ Conversation rules:
 - An initial planning request can use the empty current session. Start a new session only for an explicit separate/new trip or a standalone request to plan a trip; amendments, hypotheticals and follow-ups stay in the same session. Do not reset a trip just because another city was mentioned.
 - A pending_trip_request concerns whether to start another session. Resolve it with use_pending_request only when the latest message unambiguously answers it. A bare yes cannot choose between two alternatives. Use clarify_trip for unresolved session ambiguity; use reply for other clarification.
 - Prices and availability come only from saved search results. Options are proposals, not actual fares. Planning and searching do not make a reservation. This application does not purchase travel or cancel external bookings.
+- Prioritize collecting the backend's required inputs: travelers, departure origins, destination, exact departure and return dates. As soon as they are complete, use plan/search/choose so code starts the session immediately. Optional budget, vibe, food and accommodation details must not trigger extra questions or delay it. Do not research flights or hotels, invent quotes, or build an itinerary before handing off to the services.
+- Never say "I'll get back to you", "get back to you shortly", "I'll send it later" or promise a later update. Execute an action now or ask the one genuinely missing requirement now.
 
 Actions:
 reply: answer a question, greeting or clarification in reply, grounded in supplied facts. Ask at most one missing question. Do not promise a write or search with this action.
@@ -44,14 +47,17 @@ replacement_reply: respond to the current pending activity suggestion; this is s
 
 Set defer_search=true only when the current request explicitly asks for a draft, options only, or to wait/not search. Otherwise set it false: complete single-option planning requests and destination choices start flight/stay searches without a second confirmation. Never use reply to announce that you are starting a session/search; choose the executable action.
 
+For plan and new_trip, include planning with the extracted participants, budget_note, missing_info and options in this same response. Also include planning for search/dashboard while COLLECTING. Do not request a second model pass to extract them. For new_trip, extract the new request without copying the previous trip's destination, dates or participants; an initial request in an empty session may use that session's background chat. During COLLECTING, requests for an itinerary or restaurants use plan to gather search inputs and start the services first. A planning answer, even a brief city/date/origin/budget answer, uses plan rather than reply. If required inputs are complete, return the concrete option immediately and leave missing_info empty. For other actions omit planning.
+
 For actions other than reply or clarify_trip leave reply empty. Do not create canned responses. Match the user's language and tone, be concise, and never repeat a question already answered. option_number is 0 when irrelevant. use_pending_request is false unless resolving the stored request.`
 
 type chatDecision struct {
-	Action            string `json:"action"`
-	Reply             string `json:"reply"`
-	OptionNumber      int    `json:"option_number"`
-	UsePendingRequest bool   `json:"use_pending_request"`
-	DeferSearch       bool   `json:"defer_search"`
+	Action            string         `json:"action"`
+	Reply             string         `json:"reply"`
+	OptionNumber      int            `json:"option_number"`
+	UsePendingRequest bool           `json:"use_pending_request"`
+	DeferSearch       bool           `json:"defer_search"`
+	Planning          map[string]any `json:"planning"`
 }
 
 func (b *Brain) conversationFacts(ctx context.Context, trip *models.Trip) map[string]any {
@@ -85,13 +91,15 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 	if err != nil {
 		return err
 	}
-	out, err := b.structured(ctx, trip, chatTurnSystem, []llm.Message{{Role: "user", Content: string(input)}}, llm.Schema{
+	system := chatTurnSystem + "\n\nApply the following extraction rules only inside planning. Keep the root response as the chat_turn decision described above:\n" + prompts.PlanSystem(b.Config.BotName, b.today().Format("2006-01-02"))
+	out, err := b.structured(ctx, trip, system, []llm.Message{{Role: "user", Content: string(input)}}, llm.Schema{
 		Name: "chat_turn", Schema: map[string]any{
 			"type": "object", "properties": map[string]any{
 				"action": map[string]any{"type": "string", "enum": []string{"reply", "ignore", "new_trip", "clarify_trip", "plan", "choose", "search", "cancel", "dashboard", "itinerary", "restaurants", "hotel_map", "retry_flights", "skip_flights", "undo_activity", "edit_activity", "replace_activity", "replacement_reply"}},
 				"reply":  map[string]any{"type": "string"}, "option_number": map[string]any{"type": "integer"},
 				"use_pending_request": map[string]any{"type": "boolean"},
 				"defer_search":        map[string]any{"type": "boolean"},
+				"planning":            prompts.PlanTrip["schema"],
 			}, "required": []string{"action", "reply", "option_number", "use_pending_request", "defer_search"}, "additionalProperties": false,
 		},
 	})
@@ -142,15 +150,18 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 	case "reply":
 		return b.sayReply(ctx, trip.GroupID, decision.Reply)
 	case "new_trip":
+		if decision.Planning == nil {
+			return fmt.Errorf("new trip action returned no trip inputs")
+		}
 		// The first mention must retain the background chat just adopted into
 		// this empty session instead of resetting it out of the model's context.
 		if trip.State == models.Collecting && len(trip.Participants) == 0 && len(trip.Options) == 0 && trip.Destination == "" {
-			return b.plan(ctx, trip, m.Text, m)
+			return b.applyChatPlan(ctx, trip, decision.Planning)
 		}
-		return b.startNewTrip(ctx, trip, m, sentAt)
+		return b.startNewTripWithPlan(ctx, trip, m, sentAt, decision.Planning)
 	case "plan":
 		if trip.State == models.Searching || trip.State == models.BookingState {
-			return b.say(ctx, trip.GroupID, "A search is in progress. The requested change has not been applied. Explain the current state and ask them to wait for this search or explicitly start a separate trip.", nil)
+			return b.sayExact(ctx, trip.GroupID, "Your current session is searching. This change hasn't been applied. Follow the session here:\n"+b.tripPageURL(ctx, trip, trip.SessionID), nil)
 		}
 		if trip.State == models.Booked || trip.State == models.Cancelled {
 			trip, err = store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
@@ -159,7 +170,7 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 		if err != nil {
 			return err
 		}
-		return b.plan(ctx, trip, m.Text, m)
+		return b.applyChatPlan(ctx, trip, decision.Planning)
 	case "choose":
 		if trip.State != models.AwaitingChoice || !hasDestinationOption(trip, decision.OptionNumber) {
 			return b.say(ctx, trip.GroupID, "The requested destination option is not selectable in the current state. Ask for a current option without changing anything.", nil)
@@ -167,7 +178,7 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 		return b.selectOption(ctx, trip, decision.OptionNumber)
 	case "search":
 		if trip.State == models.Collecting {
-			return b.plan(ctx, trip, m.Text, m)
+			return b.applyChatPlan(ctx, trip, decision.Planning)
 		}
 		return b.startReadySearch(ctx, trip, decision.OptionNumber)
 	case "cancel":
@@ -185,9 +196,12 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 			return b.startReadySearch(ctx, trip, decision.OptionNumber)
 		}
 		if trip.State == models.Collecting {
-			return b.plan(ctx, trip, m.Text, m)
+			return b.applyChatPlan(ctx, trip, decision.Planning)
 		}
-		return b.say(ctx, trip.GroupID, "Share the existing active or completed session link and accurately describe its current state. Do not start another search.", nil)
+		if trip.Itinerary != nil && trip.Itinerary["dashboard_plan"] != nil {
+			return b.shareItinerary(ctx, trip)
+		}
+		return b.shareLiveSearch(ctx, trip, trip.SessionID)
 	case "itinerary":
 		return b.writeAdvisorItinerary(ctx, trip, m)
 	case "restaurants":
@@ -237,6 +251,15 @@ func (b *Brain) handleChatTurn(ctx context.Context, trip *models.Trip, m models.
 	default:
 		return fmt.Errorf("unsupported conversation action %q", decision.Action)
 	}
+}
+
+// The chat decision already extracted the requirements; never ask Gemini to
+// repeat that work before handing the session to the search services.
+func (b *Brain) applyChatPlan(ctx context.Context, trip *models.Trip, planned map[string]any) error {
+	if planned == nil {
+		return fmt.Errorf("planning action returned no trip inputs")
+	}
+	return b.applyPlan(ctx, trip, planned)
 }
 
 func hasDestinationOption(trip *models.Trip, number int) bool {

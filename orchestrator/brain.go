@@ -1,8 +1,8 @@
 // Package orchestrator is the brain. Every incoming group message lands in Brain.Handle().
 //
 // Each turn is interpreted using its session memory and current trip facts.
-// Gemini proposes a typed action; code validates and executes it. Workflow
-// outcomes are composed into one response, with a progress update for searches.
+// Gemini extracts requirements alongside a typed action; code validates and
+// starts complete sessions immediately. Search services provide actual offers.
 // The group owns one active trip; explicit new trips start separate sessions.
 package orchestrator
 
@@ -608,6 +608,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 // startNewTrip makes the latest request the group's active trip without requiring
 // approval or cancellation of the previous plan. Earlier dashboard snapshots remain intact.
 func (b *Brain) startNewTrip(ctx context.Context, previous *models.Trip, m models.IncomingMessage, sentAt time.Time) error {
+	return b.startNewTripWithPlan(ctx, previous, m, sentAt, nil)
+}
+
+func (b *Brain) startNewTripWithPlan(ctx context.Context, previous *models.Trip, m models.IncomingMessage, sentAt time.Time, planned map[string]any) error {
 	groupName := m.GroupName
 	var roster []models.GroupMember
 	if previous != nil {
@@ -647,15 +651,13 @@ func (b *Brain) startNewTrip(ctx context.Context, previous *models.Trip, m model
 	}
 	b.rememberRoster(ctx, trip, m)
 
+	if planned != nil {
+		return b.applyPlan(ctx, trip, planned)
+	}
 	return b.plan(ctx, trip, m.Text, m)
 }
 
 func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
-	if b.Dashboard != nil {
-		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
-			return err
-		}
-	}
 	input, err := json.Marshal(map[string]any{
 		"current_trip":   b.conversationFacts(ctx, trip),
 		"latest_message": incoming, "requested_change": feedback,
@@ -667,6 +669,15 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		[]llm.Message{{Role: "user", Content: string(input)}}, toSchema(prompts.PlanTrip))
 	if err != nil {
 		return err
+	}
+	return b.applyPlan(ctx, trip, planned)
+}
+
+func (b *Brain) applyPlan(ctx context.Context, trip *models.Trip, planned map[string]any) error {
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
 	}
 	var extracted []models.Participant
 	if err := decodeInto(planned["participants"], &extracted); err != nil {
@@ -693,7 +704,7 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	if len(people) > 0 {
 		fields["origin"] = orStr(people[0].OriginAirport, orStr(people[0].OriginCity, people[0].Origin))
 	}
-	trip, err = b.Store.UpdateTrip(ctx, trip.ID, fields)
+	trip, err := b.Store.UpdateTrip(ctx, trip.ID, fields)
 	if err != nil {
 		return err
 	}
@@ -701,16 +712,16 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 	if err := decodeInto(planned["missing_info"], &missing); err != nil {
 		return err
 	}
-	for _, question := range missing {
-		if strings.TrimSpace(question) != "" {
-			return b.sayReply(ctx, trip.GroupID, question)
-		}
-	}
 	if len(people) == 0 || !allOriginsKnown(people) {
-		return b.askOrigin(ctx, trip)
-	}
-	if !hasAnyDates(people) {
-		return b.askDates(ctx, trip)
+		for _, question := range missing {
+			if strings.TrimSpace(question) != "" {
+				return b.sayReply(ctx, trip.GroupID, question)
+			}
+		}
+		if len(people) == 0 {
+			return b.sayReply(ctx, trip.GroupID, "Who's going on the trip?")
+		}
+		return b.sayReply(ctx, trip.GroupID, "Which city or airport is each traveler flying from?")
 	}
 	var options []models.Option
 	for _, raw := range sliceAny(planned["options"]) {
@@ -731,7 +742,12 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		options = append(options, option)
 	}
 	if len(options) == 0 {
-		return b.say(ctx, trip.GroupID, "Preferences were saved, but no complete trip option was produced. Answer the latest request using the saved facts and ask only for what still prevents a proposal.", nil)
+		for _, question := range missing {
+			if strings.TrimSpace(question) != "" {
+				return b.sayReply(ctx, trip.GroupID, question)
+			}
+		}
+		return b.sayReply(ctx, trip.GroupID, "Where are you going, and what are your departure and return dates?")
 	}
 	if violations := validateOptions(options, people); len(violations) > 0 {
 		data, _ := json.Marshal(violations)
@@ -835,24 +851,16 @@ func optionFromMap(position int, m map[string]any) (models.Option, error) {
 	if o.DestinationAirport, err = requiredString(m, "destination_airport"); err != nil {
 		return o, err
 	}
-	if o.ActivityDescription, err = requiredString(m, "activity_description"); err != nil {
-		return o, err
-	}
-	if o.CulinaryDescription, err = requiredString(m, "culinary_description"); err != nil {
-		return o, err
-	}
+	o.ActivityDescription, _ = m["activity_description"].(string)
+	o.CulinaryDescription, _ = m["culinary_description"].(string)
 	if o.EmbarkingDate, err = requiredString(m, "embarking_date"); err != nil {
 		return o, err
 	}
 	if o.ReturningDate, err = requiredString(m, "returning_date"); err != nil {
 		return o, err
 	}
-	if o.WhyItWorks, err = requiredString(m, "why_it_works"); err != nil {
-		return o, err
-	}
-	if o.Tradeoffs, err = requiredString(m, "tradeoffs"); err != nil {
-		return o, err
-	}
+	o.WhyItWorks, _ = m["why_it_works"].(string)
+	o.Tradeoffs, _ = m["tradeoffs"].(string)
 	if v, ok := m["duration_nights"].(float64); ok {
 		o.DurationNights = int(v)
 	}
@@ -1479,22 +1487,10 @@ func (b *Brain) offerPlanFinalize(ctx context.Context, trip *models.Trip) error 
 			trip = updated
 		}
 	}
-	gaps := planGaps(trip)
-	if len(gaps) > 0 {
-		return b.say(ctx, trip.GroupID, "Almost — still need "+strings.Join(gaps, ", ")+" before I can send a full summary to finalize.", nil)
-	}
-	trip, _, err := b.generateAdvisorItinerary(ctx, trip, "Write the full day-by-day plan for this group.", "group")
-	if err != nil {
-		return err
-	}
-	if err := b.say(ctx, trip.GroupID, formatting.PlanConfirm(trip), nil); err != nil {
-		return err
-	}
-	return b.sendPoll(ctx, trip.GroupID, "Finalize this plan?", []string{"Yes, search flights and hotels", "Not yet"}, "finalize", trip.ID)
+	return b.startReadySearch(ctx, trip, 0)
 }
 
-// selectOption flattens the chosen Option onto the trip, then sends a full plan summary
-// and waits for the group to finalize before any live flight/hotel search.
+// lockChosenOption flattens the destination and search inputs onto the trip.
 func (b *Brain) lockChosenOption(ctx context.Context, trip *models.Trip, number int) (*models.Trip, error) {
 	var option *models.Option
 	for i := range trip.Options {
@@ -1568,7 +1564,7 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	}
 	option := trip.ChosenOption()
 	if option == nil {
-		return b.say(ctx, trip.GroupID, "Pick a destination first, then I'll send the plan to finalize.", nil)
+		return b.sayReply(ctx, trip.GroupID, "Which destination should I search?")
 	}
 	if option.DestinationAirport == "" {
 		if cands := destAirportCandidates("", option.Destination); len(cands) > 0 {
@@ -1585,10 +1581,10 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	depart, departErr := models.ParseDate(option.EmbarkingDate)
 	ret, returnErr := models.ParseDate(option.ReturningDate)
 	if departErr != nil || returnErr != nil || !ret.After(depart) {
-		return b.say(ctx, trip.GroupID, "Search has not started because valid departure and return dates are missing. Ask for those dates; do not assume a weekend.", nil)
+		return b.sayReply(ctx, trip.GroupID, "What are your departure and return dates?")
 	}
 	if !validIATA(option.DestinationAirport) || !allOriginsKnown(trip.Participants) || !validIATA(originAirportCode(trip.Origin, trip.Participants)) {
-		return b.say(ctx, trip.GroupID, "Search has not started because a departure or destination airport is missing. Ask for the missing airport.", nil)
+		return b.sayReply(ctx, trip.GroupID, "Which departure and destination airports should I use?")
 	}
 	option.DurationNights = int(ret.Sub(depart).Hours() / 24)
 	trip, err := store.SetState(ctx, b.Store, trip.ID, models.Searching, nil)
@@ -1619,7 +1615,6 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 		flights, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
 		done <- searchResult{flights, hotels, flightErr, hotelErr}
 	}()
-	_ = b.say(ctx, trip.GroupID, fmt.Sprintf("Flight and stay searches have been launched for %s. Share the live session link.", option.Destination), nil)
 	_ = b.shareLiveSearch(ctx, trip, sessionID)
 	if err := b.flushReply(ctx, trip.GroupID); err != nil {
 		if turn, ok := ctx.Value(replyTurnKey{}).(*replyTurn); ok {

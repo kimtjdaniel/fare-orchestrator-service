@@ -18,6 +18,7 @@ import (
 type Session struct {
 	ID                 string    `json:"id"`
 	GroupID            string    `json:"groupId"`
+	GroupName          string    `json:"groupName,omitempty"`
 	Destination        string    `json:"destination"`
 	Origin             string    `json:"origin"`
 	OriginAirport      string    `json:"originAirport,omitempty"`
@@ -147,6 +148,13 @@ func (m *Manager) load(ctx context.Context, id string) (*group, error) {
 		if err != nil {
 			return nil, err
 		}
+		if trip != nil {
+			for _, snapshot := range g.Sessions {
+				if snapshot.Session.GroupName == "" {
+					snapshot.Session.GroupName = trip.GroupName
+				}
+			}
+		}
 		if trip != nil && trip.Itinerary != nil {
 			itinerary := models.ScheduleItinerary(trip, trip.Itinerary, false)
 			plan, _ := itinerary["dashboard_plan"].(map[string]any)
@@ -186,6 +194,7 @@ func (m *Manager) persist(ctx context.Context, id string, g *group) error {
 }
 func syncSession(s *Session, t *models.Trip) {
 	s.GroupID = t.GroupID
+	s.GroupName = t.GroupName
 	s.Origin = t.Origin
 	s.DestinationAirport = t.DestinationAirport
 	if t.Destination != "" {
