@@ -49,7 +49,7 @@ func runSearchService(ctx context.Context, cfg *config.Settings, agent string, r
 	defer func() {
 		if result != nil {
 			if events, ok := ctx.Value(searchEventsKey{}).(searchEvents); ok && events.emit != nil {
-				events.emit(agent+"_search.recording.completed", map[string]any{"agentType": agent, "searchId": result["search_id"], "recordingUrl": result["recording_url"], "recordingError": result["recording_error"], "deliveryError": result["delivery_error"]})
+				events.emit(agent+"_search.recording.completed", map[string]any{"agentType": agent, "searchId": result["search_id"], "recordingUrl": result["recording_url"], "replayUrl": searchReplayURL(result), "recordingError": result["recording_error"], "deliveryError": result["delivery_error"]})
 			}
 		}
 	}()
@@ -194,5 +194,21 @@ func validateSearchResult(agent string, result map[string]any) (map[string]any, 
 	}
 	return result, nil
 }
+func searchReplayURL(result map[string]any) string {
+	if replay := searchRecordText(result["replay_url"]); replay != "" {
+		return replay
+	}
+	if origins, ok := result["origins"].([]any); ok {
+		for _, value := range origins {
+			if origin, ok := value.(map[string]any); ok {
+				if replay := searchRecordText(origin["replay_url"]); replay != "" {
+					return replay
+				}
+			}
+		}
+	}
+	return ""
+}
+
 func searchRecordText(value any) string    { s, _ := value.(string); return s }
 func searchRecordNumber(value any) float64 { n, _ := value.(float64); return n }
