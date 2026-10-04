@@ -100,6 +100,7 @@ var allowedTripFields = map[string]bool{
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 	"pending_trip_request": true,
+	"planning_readiness":   true,
 	"session_id":           true,
 	"organizer_wa_id":      true, "intake": true, "pending_question": true, "conflicts": true,
 	"intake_polls": true, "last_agent_text": true,
