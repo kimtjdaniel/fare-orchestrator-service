@@ -11,7 +11,7 @@ import (
 	"fare-brain/tools"
 )
 
-func (b *Brain) sendHotelPhoto(ctx context.Context, trip *models.Trip) error {
+func (b *Brain) sendHotelMap(ctx context.Context, trip *models.Trip) error {
 	hotel, err := b.hotelForTrip(ctx, trip)
 	if err != nil || hotel == nil || strings.TrimSpace(hotel.Name) == "" {
 		return b.say(ctx, trip.GroupID, "We haven't locked a stay yet. Once a city's picked I can send the pin.", nil)

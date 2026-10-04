@@ -42,16 +42,16 @@ var (
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
 	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
 	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
-	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|full \d+\s*-?\s*days?|neighbourhood|neighborhood|hidden gem)`)
+	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|day[- ]?to[- ]?day|each day|every day|detailed (?:\w+\s+){0,3}plan|plan (?:for )?each day|things to do|what to visit|go visit|full \d+\s*-?\s*days?|day\s*\d+|neighbourhood|neighborhood|hidden gem)`)
 	restaurantAskRe = regexp.MustCompile(`(?i)\b(restaurants?|where to eat|places to eat|dinner spots?|food recs?|what (should|can|do) we eat|best (pizza|pasta|eats)|wine bars?|trattoria|where (?:are|should) we (?:eat|dine))\b`)
 	introAskRe     = regexp.MustCompile(`(?i)\b(introduce yourself|intro yourself|who are you|what (can|do) you do|what are you capable of|your capabilities|what can fare do)\b`)
 	greetingOnlyRe = regexp.MustCompile(`(?i)^(?:@\S+\s+)*(?:hi|hey|hello|yo|sup|what'?s up|help|you there)?[\s!.,?]*$`)
 	atTokenRe      = regexp.MustCompile(`(?i)@\S+`)
-	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
-	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
+	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay|map|pin)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
+	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:map|pin|link))|(?:send|show)(?:\s+\w+){0,3}\s+(?:map|pin))\b`)
 	whoPaysRe      = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
 	iPayRe         = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
-	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked)\b`)
+	statusAskRe    = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked|which dates|what dates|when (?:are|do) we (?:go|leave|fly|heading))\b`)
 	flightAskRe    = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
 	cheaperAskRe   = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
 )
@@ -196,6 +196,9 @@ func looksLikeItineraryAsk(text string) bool {
 }
 
 func looksLikeRestaurantAsk(text string) bool {
+	if looksLikeItineraryAsk(text) {
+		return false
+	}
 	return restaurantAskRe.MatchString(text)
 }
 
@@ -244,9 +247,9 @@ func quotedText(m models.IncomingMessage) string {
 	return strings.TrimSpace(m.Quoted.Text)
 }
 
-// wantsHotelPhoto is only for the current line asking for the stay/photo — never
-// because a quoted bot message happened to say "photo" or "picking".
-func wantsHotelPhoto(trip *models.Trip, m models.IncomingMessage) bool {
+// wantsHotelMap is only for the current line asking for the stay — never because
+// a quoted bot line happened to mention the hotel or a map.
+func wantsHotelMap(trip *models.Trip, m models.IncomingMessage) bool {
 	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
 		return false
 	}
@@ -590,9 +593,6 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if err != nil {
 			return err
 		}
-		if handled && looksLikeItineraryAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) {
-			return b.writeAdvisorItinerary(ctx, trip, m)
-		}
 		if handled {
 			return nil
 		}
@@ -603,11 +603,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	switch trip.State {
 	case models.Collecting:
-		if m.Tagged && looksLikeRestaurantAsk(m.Text) {
-			return b.writeRestaurantPlan(ctx, trip, m)
-		}
 		if m.Tagged && looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
+		}
+		if m.Tagged && looksLikeRestaurantAsk(m.Text) {
+			return b.writeRestaurantPlan(ctx, trip, m)
 		}
 		enough := enoughToPlan(trip.Participants)
 		if looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) || (m.Tagged && !enough) {
@@ -974,11 +974,11 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "other" && m.Tagged:
-		if looksLikeRestaurantAsk(m.Text) {
-			return b.writeRestaurantPlan(ctx, trip, m)
-		}
 		if looksLikeItineraryAsk(m.Text) {
 			return b.writeAdvisorItinerary(ctx, trip, m)
+		}
+		if looksLikeRestaurantAsk(m.Text) {
+			return b.writeRestaurantPlan(ctx, trip, m)
 		}
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "approve" && trip.State == models.AwaitingChoice:
@@ -1009,10 +1009,7 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) {
 		return map[string]any{"intent": "other"}, nil
 	}
-	if looksLikeRestaurantAsk(m.Text) {
-		return map[string]any{"intent": "question"}, nil
-	}
-	if looksLikeItineraryAsk(m.Text) {
+	if looksLikeItineraryAsk(m.Text) || looksLikeRestaurantAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
 	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) {
@@ -1091,7 +1088,7 @@ func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.
 	}
 	user += "\nLOCKED TRIP FACTS (JSON). Use these. Inventing prices or airports is not allowed.\n" + string(facts)
 	user += "\n\nRecent chat:\n" + compactChat(history, 12)
-	user += "\n\nReply to the latest message only. If they asked for a photo, say you are sending the hotel photo — do not describe random scenery."
+	user += "\n\nReply to the latest message only. Never claim you are sending a photo or picture. If they asked about the hotel, name the stay — a Google Maps pin is sent separately."
 	slog.Info("calling gemini", "stage", "reply", "from", m.SenderName, "text", clipLog(m.Text, 80))
 	answer, err := b.LLM.Agent(ctx, prompts.AgentSystem(b.Config.BotName, string(facts)),
 		[]llm.Message{{Role: "user", Content: user}},
@@ -1148,14 +1145,21 @@ func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.Inc
 		}
 		did = true
 	}
+	if looksLikeItineraryAsk(m.Text) {
+		if err := b.writeAdvisorItinerary(ctx, trip, m); err != nil {
+			return true, err
+		}
+		did = true
+		return did, nil
+	}
 	if looksLikeRestaurantAsk(m.Text) {
 		if err := b.writeRestaurantPlan(ctx, trip, m); err != nil {
 			return true, err
 		}
 		did = true
 	}
-	if wantsHotelPhoto(trip, m) && !looksLikeCancelBooking(m.Text) {
-		if err := b.sendHotelPhoto(ctx, trip); err != nil {
+	if wantsHotelMap(trip, m) && !looksLikeCancelBooking(m.Text) {
+		if err := b.sendHotelMap(ctx, trip); err != nil {
 			return true, err
 		}
 		did = true

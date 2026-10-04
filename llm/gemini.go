@@ -36,7 +36,7 @@ func NewGeminiLLM(apiKey, model, cacheDir string) *GeminiLLM {
 	if model == "" {
 		model = "gemini-3.1-flash-lite"
 	}
-	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 40 * time.Second}}
+	return &GeminiLLM{APIKey: apiKey, Model: model, CacheDir: cacheDir, HTTPClient: &http.Client{Timeout: 75 * time.Second}}
 }
 
 func (g *GeminiLLM) modelsToTry() []string {
@@ -52,7 +52,6 @@ func (g *GeminiLLM) modelsToTry() []string {
 	}
 	add(g.Model)
 	add("gemini-3.1-flash-lite")
-	add("gemini-3.5-flash-lite")
 	return out
 }
 
@@ -145,6 +144,15 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 			httpResp, err := g.HTTPClient.Do(httpReq)
 			if err != nil {
 				lastErr = err
+				slog.Warn("gemini request failed", "kind", kind, "model", model, "attempt", attempt, "err", err)
+				if attempt < 2 {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(500 * time.Millisecond):
+					}
+					continue
+				}
 				break
 			}
 			raw, err := io.ReadAll(httpResp.Body)
@@ -197,7 +205,7 @@ func (g *GeminiLLM) Structured(ctx context.Context, system string, messages []Me
 		"generationConfig": map[string]any{
 			"responseMimeType": "application/json",
 			"responseSchema":   toGeminiSchema(schema.Schema),
-			"maxOutputTokens":  2048,
+			"maxOutputTokens":  4096,
 		},
 	})
 	if err != nil {

@@ -13,7 +13,7 @@ Talk like a well-travelled friend: contractions, specific, useful. Lead with the
 All prices are Canadian dollars. Write them like C$1,200. Never USD, never a bare $ unless it's C$.
 Price and flights matter, but so do neighborhoods, food, pace, and what the days actually feel like.
 When you address a specific person, @mention them with their exact roster display name, like @Paul Pham. Never use WhatsApp IDs, phone numbers, @c.us, @g.us, or @lid. No emoji, no markdown headers.
-Never paste localhost, dashboard URLs, or any booking/checkout links. If they ask for a hotel or a restaurant, describe it like a person — the app will send a Google Maps link separately.
+Never paste localhost, dashboard URLs, or any booking/checkout links. Never say you are sending a photo. If they ask for a hotel or a restaurant, name the place — the app sends a Google Maps pin separately.
 For a quick reply: 1-3 sentences. For an itinerary or advice: a readable day-by-day layout with blank lines, "Day 1 — ...", morning/afternoon/evening in short lines. No bullet dumps of prices.
 Don't open with "Great question". Ask at most one question, and only if something is actually missing.`
 
@@ -104,7 +104,7 @@ If they want a day-by-day itinerary, write the full days (not new date-range opt
 Never invent a price, airport, airline, or hotel. If a number is not in the facts JSON, do not quote one. Once locked fares exist, ignore older option guesses (like C$3,200).
 Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
-If they asked for a photo, do not describe scenery and never claim you sent a photo — code sends it or it did not send.
+Never say you are sending a photo, picture, screenshot, or image. There is no photo feature. If they ask about the hotel or where you're staying, name the property; code sends a Google Maps pin separately.
 You cannot cancel bookings or change a booked destination in this reply. Never claim you cancelled or cleared a trip.
 Trip notes: %s`, botName, ChatVoice, context)
 }
