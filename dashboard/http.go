@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"github.com/gorilla/websocket"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -18,14 +19,26 @@ func respond(w http.ResponseWriter, status int, value any) {
 func (m *Manager) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /dashboard/events", m.dashboardSocket)
 	mux.HandleFunc("GET /dashboard/sessions", func(w http.ResponseWriter, r *http.Request) {
+		limit, offset, ok := pageBounds(r)
+		if !ok {
+			respond(w, 400, map[string]string{"error": "limit must be 1–24 and offset must be 0 or greater"})
+			return
+		}
+		filter := r.URL.Query().Get("filter")
+		switch filter {
+		case "", "all", "live", "ready", "failed":
+		default:
+			respond(w, 400, map[string]string{"error": "filter must be all, live, ready, or failed"})
+			return
+		}
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		sessions, err := m.dashboardSessionsLocked(r.Context())
+		page, err := m.pageDashboardSessions(r.Context(), limit, offset, filter, r.URL.Query().Get("q"))
 		if err != nil {
 			respond(w, 503, map[string]string{"error": "Could not load dashboard sessions"})
 			return
 		}
-		respond(w, 200, sessions)
+		respond(w, 200, page)
 	})
 	mux.HandleFunc("GET /groups/{gid}/events", m.socket)
 	mux.HandleFunc("GET /groups/{gid}/sessions", func(w http.ResponseWriter, r *http.Request) {
@@ -68,6 +81,25 @@ func (m *Manager) dashboardSocket(w http.ResponseWriter, r *http.Request) {
 	m.serveSocket(w, r, "", true)
 }
 
+func pageBounds(r *http.Request) (limit, offset int, ok bool) {
+	limit = 8
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 24 {
+			return 0, 0, false
+		}
+		limit = n
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("offset")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return 0, 0, false
+		}
+		offset = n
+	}
+	return limit, offset, true
+}
+
 func (m *Manager) serveSocket(w http.ResponseWriter, r *http.Request, id string, dashboardWide bool) {
 	// This hackathon has no authentication for group or dashboard connections.
 	upgrade := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -83,7 +115,8 @@ func (m *Manager) serveSocket(w http.ResponseWriter, r *http.Request, id string,
 	kind := "group.snapshot"
 	subscribers := m.dashboardSubscribers
 	if dashboardWide {
-		sessions, err = m.dashboardSessionsLocked(r.Context())
+		// The ticket list pages GET /dashboard/sessions. The socket stays open
+		// for live session events and does not ship every trip on connect.
 		revision = m.dashboardRevision
 		kind = "dashboard.snapshot"
 	} else {

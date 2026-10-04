@@ -101,6 +101,86 @@ func (m *Manager) dashboardSessionsLocked(ctx context.Context) ([]*Snapshot, err
 	return sessions, nil
 }
 
+// DashboardSessionPage is one page of ticket-list rows. Counts cover every
+// session; Total is the size of the filtered set.
+type DashboardSessionPage struct {
+	Sessions []Session      `json:"sessions"`
+	Total    int            `json:"total"`
+	Limit    int            `json:"limit"`
+	Offset   int            `json:"offset"`
+	Counts   map[string]int `json:"counts"`
+}
+
+func (m *Manager) pageDashboardSessions(ctx context.Context, limit, offset int, filter, query string) (DashboardSessionPage, error) {
+	all, err := m.dashboardSessionsLocked(ctx)
+	if err != nil {
+		return DashboardSessionPage{}, err
+	}
+	counts := map[string]int{"all": len(all), "live": 0, "ready": 0, "failed": 0}
+	matched := make([]Session, 0, len(all))
+	needle := strings.ToLower(strings.TrimSpace(query))
+	for _, snapshot := range all {
+		session := snapshot.Session
+		switch session.Status {
+		case "completed":
+			counts["ready"]++
+		case "failed":
+			counts["failed"]++
+		default:
+			counts["live"]++
+		}
+		if !sessionMatchesFilter(session.Status, filter) || !sessionMatchesQuery(session, needle) {
+			continue
+		}
+		matched = append(matched, session)
+	}
+	if offset > len(matched) {
+		offset = len(matched)
+	}
+	end := offset + limit
+	if end > len(matched) {
+		end = len(matched)
+	}
+	page := matched[offset:end]
+	if page == nil {
+		page = []Session{}
+	}
+	return DashboardSessionPage{Sessions: page, Total: len(matched), Limit: limit, Offset: offset, Counts: counts}, nil
+}
+
+func sessionMatchesFilter(status, filter string) bool {
+	switch filter {
+	case "live":
+		return status != "completed" && status != "failed"
+	case "ready":
+		return status == "completed"
+	case "failed":
+		return status == "failed"
+	default:
+		return true
+	}
+}
+
+func sessionMatchesQuery(session Session, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	destination := strings.TrimSpace(session.Destination)
+	if destination == "" || strings.EqualFold(destination, "Planning your trip") {
+		destination = "Your next adventure"
+	}
+	haystack := strings.ToLower(strings.Join([]string{destination, session.GroupName, session.GroupID, session.Origin, searchableDate(session.StartDate), searchableDate(session.EndDate)}, " "))
+	return strings.Contains(haystack, needle)
+}
+
+func searchableDate(value string) string {
+	parsed, err := time.Parse("2006-01-02", strings.TrimSpace(value))
+	if err != nil {
+		return value
+	}
+	return parsed.Format("2006-01-02 Jan January")
+}
+
 func (m *Manager) load(ctx context.Context, id string) (*group, error) {
 	aliases := models.GroupIDKeys(id)
 	id = models.CanonicalGroupID(id)
