@@ -12,6 +12,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,7 +39,7 @@ const (
 	fConstraints    = "constraints"
 )
 
-const llmCallTimeout = 8 * time.Second   // spec §7.3
+const llmCallTimeout = 45 * time.Second
 const pollWaitTimeout = 10 * time.Minute // spec §4.2
 
 // ------------------------------------------------------------------ entry points
@@ -48,6 +49,14 @@ const pollWaitTimeout = 10 * time.Minute // spec §4.2
 func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	if trip.Intake == nil {
 		trip = b.seedIntake(ctx, trip, m)
+	}
+
+	hadAttendance := anyAttendanceKnown(trip)
+	trip = b.applyChatShortcuts(ctx, trip, m)
+	if !hadAttendance && anyAttendanceKnown(trip) {
+		ex := &intakeExtraction{TripIntent: "none", AnswersPendingQuestion: true}
+		trip, _ = b.applyHarvestedTripFacts(ctx, trip, m.Text)
+		return b.continueIntake(ctx, trip, ex)
 	}
 
 	extraction, err := b.extractIntake(ctx, trip, m.Text, m.SenderID)
@@ -64,8 +73,28 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 		return b.writeAndSend(ctx, trip, "CANCEL", "the group asked to stop planning", nil)
 	}
 
+	harvestedDates := false
 	if extraction != nil {
 		trip = b.applyExtraction(ctx, trip, extraction, m.SenderID, m.MessageID)
+	}
+	trip, harvestedDates = b.applyHarvestedTripFacts(ctx, trip, m.Text)
+	if harvestedDates {
+		if extraction == nil {
+			extraction = &intakeExtraction{TripIntent: "none"}
+		}
+		extraction.Updates = append(extraction.Updates, intakeUpdate{
+			Scope: "trip", Field: fExactDates, ValueText: m.Text, Confidence: "confirmed",
+		})
+		if trip.PendingQuestion != nil && (trip.PendingQuestion.Field == fDateWindow || trip.PendingQuestion.Field == fExactDates) {
+			extraction.AnswersPendingQuestion = true
+		}
+	}
+	trip = b.applyChatShortcuts(ctx, trip, m)
+	if anyAttendanceKnown(trip) && trip.PendingQuestion != nil && trip.PendingQuestion.Field == fAttendance {
+		if extraction == nil {
+			extraction = &intakeExtraction{TripIntent: "none"}
+		}
+		extraction.AnswersPendingQuestion = true
 	}
 
 	return b.continueIntake(ctx, trip, extraction)
@@ -132,11 +161,12 @@ func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extractio
 	}
 
 	if trip.PendingQuestion != nil {
+		pending := trip.PendingQuestion.Field
 		answered := extraction != nil && extraction.AnswersPendingQuestion
-		if !answered && !fieldSatisfied(trip, trip.PendingQuestion.Field) {
-			return nil // spec §4 step 5: not an answer, not tagged-and-relevant -> stay silent, don't nag
+		if fieldSatisfied(trip, pending) || answered {
+			trip = b.closeOpenPollsForField(ctx, trip, pending)
+			trip = b.clearPendingQuestion(ctx, trip)
 		}
-		trip = b.clearPendingQuestion(ctx, trip)
 	}
 
 	if extraction != nil && extraction.Approval == "yes" && readyToSearch(trip) {
@@ -146,6 +176,9 @@ func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extractio
 	missing := nextMissingField(trip)
 	if missing == "" {
 		return b.confirmReady(ctx, trip)
+	}
+	if hasOpenIntakePoll(trip, missing) {
+		return nil
 	}
 	return b.askField(ctx, trip, missing)
 }
@@ -179,7 +212,7 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 	coming := comingParticipants(trip)
 	switch field {
 	case fAttendance:
-		return len(coming) >= 1 && anyAttendanceKnown(trip)
+		return anyAttendanceKnown(trip) && len(comingParticipants(trip)) >= 1
 	case fOrigin:
 		for _, p := range coming {
 			if p.Intake == nil || !p.Intake.Origin.Known() {
@@ -188,6 +221,9 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 		}
 		return len(coming) > 0
 	case fDateWindow:
+		if intake.ExactDates != nil && intake.ExactDates.Depart != "" && intake.ExactDates.Return != "" {
+			return true
+		}
 		return intake.DateWindow != nil && intake.DateWindow.Earliest != "" && intake.Nights.Min > 0
 	case fExactDates:
 		return intake.ExactDates != nil && intake.ExactDates.Depart != "" && intake.ExactDates.Return != ""
@@ -200,7 +236,7 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 	case fDestination:
 		return intake.Destination.Known()
 	case fConstraints:
-		return intake.Constraints.Known()
+		return true
 	}
 	return true
 }
@@ -474,6 +510,136 @@ func (b *Brain) applyExtraction(ctx context.Context, trip *models.Trip, ex *inta
 	return updated
 }
 
+func (b *Brain) applyHarvestedTripFacts(ctx context.Context, trip *models.Trip, text string) (*models.Trip, bool) {
+	h := harvestText(text, b.today())
+	if len(h.Dates) < 2 {
+		return trip, false
+	}
+	dates := unionDates(nil, h.Dates)
+	if len(dates) < 2 {
+		return trip, false
+	}
+	start, end := dates[0], dates[len(dates)-1]
+	intake := trip.Intake
+	if intake == nil {
+		intake = &models.TripIntake{}
+	}
+	if intake.ExactDates == nil || intake.ExactDates.Depart == "" {
+		intake.ExactDates = &models.ExactDates{Depart: start, Return: end}
+	}
+	if intake.DateWindow == nil {
+		intake.DateWindow = &models.DateWindow{Earliest: start, Latest: end}
+	}
+	if intake.Nights.Min == 0 {
+		if t1, err1 := models.ParseDate(start); err1 == nil {
+			if t2, err2 := models.ParseDate(end); err2 == nil {
+				n := int(t2.Sub(t1).Hours()/24 + 0.5)
+				if n < 1 {
+					n = 1
+				}
+				intake.Nights = models.NightsRange{Min: n, Max: n}
+			}
+		}
+	}
+	if h.Destination != "" && !intake.Destination.Known() {
+		intake.Destination = models.FieldValue{Value: h.Destination, Confidence: models.Confirmed, UpdatedAt: models.Now()}
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake": intake})
+	if err != nil || updated == nil {
+		trip.Intake = intake
+		return trip, true
+	}
+	return updated, true
+}
+
+var (
+	soloTravelerRe  = regexp.MustCompile(`(?i)\b(just me|only me|just myself|i(?:'m| am) the only(?: one| person)?|only (?:one|i)(?:'s| is)? going|solo(?: trip)?)\b`)
+	attendanceYesRe = regexp.MustCompile(`(?i)^\s*(?:@\S+\s+)*(?:yes(?:\s+i\s+can)?|yeah|yep|yup|sure|ok(?:ay)?|i\s+can|i\s+confirm|confirmed|confirm|i'?m\s+in|count\s+me\s+in|just\s+me|only\s+me|coming)[\s!.]*$`)
+)
+
+func strongAttendanceYes(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) > 80 {
+		return soloTravelerRe.MatchString(text)
+	}
+	return attendanceYesRe.MatchString(text) || soloTravelerRe.MatchString(text)
+}
+
+func (b *Brain) applyChatShortcuts(ctx context.Context, trip *models.Trip, m models.IncomingMessage) *models.Trip {
+	text := strings.TrimSpace(m.Text)
+	if text == "" {
+		return trip
+	}
+	h := harvestText(text, b.today())
+	changed := false
+	intake := trip.Intake
+	if intake == nil {
+		intake = &models.TripIntake{}
+		trip.Intake = intake
+	}
+	if h.Destination != "" && !intake.Destination.Known() {
+		intake.Destination = models.FieldValue{Value: h.Destination, Confidence: models.Confirmed, UpdatedAt: models.Now()}
+		changed = true
+	}
+	pendingAttendance := trip.PendingQuestion != nil && trip.PendingQuestion.Field == fAttendance
+	if m.SenderID != "" && (strongAttendanceYes(text) || (pendingAttendance && attendanceYesRe.MatchString(text))) && (!anyAttendanceKnown(trip) || pendingAttendance) {
+		idx := findOrCreateParticipantIndexPtr(trip, m.SenderID)
+		if idx >= 0 {
+			if trip.Participants[idx].WhatsAppName == "" {
+				trip.Participants[idx].WhatsAppName = m.SenderName
+			}
+			if trip.Participants[idx].Intake == nil {
+				trip.Participants[idx].Intake = &models.ParticipantIntake{}
+			}
+			trip.Participants[idx].Intake.Attendance = "coming"
+			changed = true
+		}
+		if soloTravelerRe.MatchString(text) && !intake.Headcount.Known() {
+			intake.Headcount = models.FieldValue{Value: float64(1), Confidence: models.Confirmed, UpdatedAt: models.Now()}
+			changed = true
+		}
+	}
+	if !changed {
+		return trip
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake": intake, "participants": trip.Participants})
+	if err != nil || updated == nil {
+		trip.Intake = intake
+		return trip
+	}
+	return updated
+}
+
+func hasOpenIntakePoll(trip *models.Trip, field string) bool {
+	if trip == nil {
+		return false
+	}
+	for _, p := range trip.IntakePolls {
+		if !p.Closed && p.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *Brain) closeOpenPollsForField(ctx context.Context, trip *models.Trip, field string) *models.Trip {
+	changed := false
+	for i := range trip.IntakePolls {
+		if !trip.IntakePolls[i].Closed && trip.IntakePolls[i].Field == field {
+			trip.IntakePolls[i].Closed = true
+			changed = true
+		}
+	}
+	if !changed {
+		return trip
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake_polls": trip.IntakePolls})
+	if err != nil || updated == nil {
+		return trip
+	}
+	return updated
+}
+
 func findOrCreateParticipantIndex(participants *[]models.Participant, waID string) int {
 	if waID == "" {
 		return -1
@@ -664,6 +830,9 @@ func splitNonEmpty(s, sep string) []string {
 // ------------------------------------------------------------------ asking (§4.1, §4.2, §6)
 
 func (b *Brain) askField(ctx context.Context, trip *models.Trip, field string) error {
+	if fieldSatisfied(trip, field) || hasOpenIntakePoll(trip, field) {
+		return nil
+	}
 	switch field {
 	case fAttendance:
 		return b.askAttendancePoll(ctx, trip)
@@ -1029,7 +1198,7 @@ func (b *Brain) writeAndSend(ctx context.Context, trip *models.Trip, intent, slo
 	case r := <-done:
 		if r.err != nil || strings.TrimSpace(r.text) == "" {
 			slog.Warn("intake writer failed", "group_id", trip.GroupID, "intent", intent, "err", r.err)
-			return nil
+			return b.Messenger.Send(ctx, trip.GroupID, "Got that — still lining up the next question.", nil)
 		}
 		if err := b.Messenger.Send(ctx, trip.GroupID, r.text, nil); err != nil {
 			return err

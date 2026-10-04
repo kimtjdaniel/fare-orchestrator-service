@@ -19,6 +19,7 @@ var (
 	nightsRe  = regexp.MustCompile(`(?i)\b(\d{1,2})\s*-?\s*(?:days?|nights?)\b`)
 	destToRe  = regexp.MustCompile(`(?i)\b(?:going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
 	tripPlaceRe = regexp.MustCompile(`(?i)\b(?:plan|book|arrange)\s+(?:a\s+|an\s+)?(?:\d{1,2}\s*-?\s*(?:night|day)s?\s+)?([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+trip\b`)
+	tripToPlaceRe = regexp.MustCompile(`(?i)\b(?:trip to|visit)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
 	insteadToRe = regexp.MustCompile(`(?i)\b(?:to|for)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+instead\b`)
 	budgetRe  = regexp.MustCompile(`(?i)(?:c\$|cad\s*\$?|\$)\s*([\d,]+)|budget[^\d]{0,12}([\d,]+)`)
 	monthOnlyRe = regexp.MustCompile(`(?i)\b(?:next\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`)
@@ -279,6 +280,16 @@ func parseDestination(text string) string {
 	if m := insteadToRe.FindStringSubmatch(text); len(m) == 2 {
 		if dest := cleanPlaceName(m[1]); dest != "" {
 			return dest
+		}
+	}
+	if m := tripToPlaceRe.FindStringSubmatch(text); len(m) == 2 {
+		if dest := cleanPlaceName(m[1]); dest != "" {
+			return dest
+		}
+	}
+	for _, city := range []string{"paris", "lisbon", "london", "rome", "barcelona", "madrid", "berlin", "amsterdam", "prague", "tokyo", "seoul", "tel aviv"} {
+		if strings.Contains(low, city) {
+			return strings.ToUpper(city[:1]) + city[1:]
 		}
 	}
 	return ""

@@ -665,13 +665,13 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	switch trip.State {
 	case models.Collecting:
+		if trip.PendingQuestion != nil || strongAttendanceYes(m.Text) || m.Tagged || looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
+			return b.runIntakeTurn(ctx, trip, m)
+		}
 		if looksLikeDirectQuestion(m.Text) {
 			return b.answerQuestion(ctx, trip, m)
 		}
-		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
-			return nil
-		}
-		return b.runIntakeTurn(ctx, trip, m)
+		return nil
 	case models.AwaitingChoice, models.AwaitingApproval:
 		return b.onReply(ctx, trip, m)
 	case models.Searching, models.BookingState:
