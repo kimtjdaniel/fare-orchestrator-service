@@ -50,12 +50,28 @@ func Dates(startStr, endStr string) string {
 	return fmt.Sprintf("%s %d – %s %d", start.Format("Jan"), start.Day(), end.Format("Jan"), end.Day())
 }
 
-func DashboardLink(dashboardURL, groupID string) string {
+func dashboardBase(dashboardURL string) string {
 	base := strings.TrimRight(strings.TrimSpace(dashboardURL), "/")
-	if base == "" || strings.TrimSpace(groupID) == "" {
+	base = strings.TrimSuffix(base, "/dashboard")
+	return strings.TrimRight(base, "/")
+}
+
+func DashboardLink(dashboardURL, groupID string) string {
+	base := dashboardBase(dashboardURL)
+	groupID = strings.TrimSpace(groupID)
+	if base == "" || groupID == "" {
 		return ""
 	}
 	return base + "/dashboard/" + url.PathEscape(groupID)
+}
+
+func SessionLink(dashboardURL, groupID, sessionID string) string {
+	link := DashboardLink(dashboardURL, groupID)
+	sessionID = strings.TrimSpace(sessionID)
+	if link == "" || sessionID == "" {
+		return link
+	}
+	return link + "/" + url.PathEscape(sessionID)
 }
 
 func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL string) string {

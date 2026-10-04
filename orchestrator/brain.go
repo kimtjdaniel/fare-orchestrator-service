@@ -39,6 +39,7 @@ const defaultLeadEmail = "demo@fare.travel"
 var (
 	choiceOnlyRe  = regexp.MustCompile(`(?i)^\s*(?:option\s*)?([1-3])\s*[.!]?\s*$`)
 	approveOnlyRe = regexp.MustCompile(`(?i)^\s*(✅|👍|yes|yep|book it|approve)\s*!*\s*$`)
+	bookAskRe     = regexp.MustCompile(`(?i)\b((?:please |let'?s |go ahead and )?book(?:ing)?(?:\s+(?:it|this|them|now|the trip|the stay|(?:the )?(?:flights?|hotels?)))+|(?:let'?s|please|go ahead and) book|confirm (?:the )?(?:booking|trip)|lock it in)\b`)
 	rejectOnlyRe  = regexp.MustCompile(`(?i)^\s*(❌|👎|no|nope)\s*!*\s*$`)
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
 	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
@@ -222,7 +223,17 @@ func looksLikeOnlyGreeting(text string) bool {
 	return stripped == "" || greetingOnlyRe.MatchString(stripped)
 }
 
+func looksLikeBookAsk(text string) bool {
+	if approveOnlyRe.MatchString(text) {
+		return true
+	}
+	return bookAskRe.MatchString(text)
+}
+
 func looksLikeHotelAsk(text string) bool {
+	if looksLikeBookAsk(text) {
+		return false
+	}
 	return hotelAskRe.MatchString(text)
 }
 
@@ -243,6 +254,9 @@ func looksLikeStatusAsk(text string) bool {
 }
 
 func looksLikeFlightAsk(text string) bool {
+	if looksLikeBookAsk(text) {
+		return false
+	}
 	return flightAskRe.MatchString(text)
 }
 
@@ -382,7 +396,7 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
 		return false
 	}
-	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) || looksLikeDashboardAsk(m.Text) {
+	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeBookAsk(m.Text) {
 		return false
 	}
 	return true
@@ -1026,7 +1040,7 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "approve" && trip.State == models.AwaitingChoice:
-		return b.say(ctx, trip.GroupID, "Need a 1, 2, or 3 on the poll first.", nil)
+		return b.handleBookAsk(ctx, trip, m)
 	}
 	return nil
 }
@@ -1039,16 +1053,19 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 			return map[string]any{"intent": "choose", "option_number": float64(n)}, nil
 		}
 	}
+	if trip.State == models.AwaitingApproval && (approveOnlyRe.MatchString(m.Text) || looksLikeBookAsk(m.Text)) {
+		return map[string]any{"intent": "approve"}, nil
+	}
 	if trip.State == models.AwaitingApproval {
-		if approveOnlyRe.MatchString(m.Text) {
-			return map[string]any{"intent": "approve"}, nil
-		}
 		if rejectOnlyRe.MatchString(m.Text) {
 			return map[string]any{"intent": "reject"}, nil
 		}
 	}
 	if !m.Tagged {
 		return nil, nil // ordinary chatter: saved, but no reply and no LLM spend
+	}
+	if looksLikeBookAsk(m.Text) {
+		return map[string]any{"intent": "approve"}, nil
 	}
 	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) {
 		return map[string]any{"intent": "other"}, nil
@@ -1218,6 +1235,12 @@ func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.
 
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
 	did := false
+	if looksLikeBookAsk(m.Text) {
+		if err := b.handleBookAsk(ctx, trip, m); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
 	if looksLikeDashboardAsk(m.Text) {
 		if err := b.shareDashboard(ctx, trip); err != nil {
 			return true, err
@@ -1262,6 +1285,63 @@ func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.Inc
 		did = true
 	}
 	return did, nil
+}
+
+func (b *Brain) handleBookAsk(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	switch trip.State {
+	case models.AwaitingApproval:
+		return b.requestBooking(ctx, trip, m.SenderName)
+	case models.Searching, models.BookingState:
+		return b.say(ctx, trip.GroupID, "Already on it — I'll drop flights and the stay here when it's done.", nil)
+	case models.Booked:
+		return b.say(ctx, trip.GroupID, "Already booked (sandbox). Say cancel if you want to start over.", nil)
+	case models.AwaitingChoice:
+		if n := bookableOption(trip); n > 0 {
+			return b.selectOption(ctx, trip, n)
+		}
+		return b.say(ctx, trip.GroupID, "Pick 1, 2, or 3 first — then I search and we can book.", nil)
+	default:
+		if n := bookableOption(trip); n > 0 {
+			return b.selectOption(ctx, trip, n)
+		}
+		if trip.Destination != "" && trip.EmbarkingDate != "" {
+			opt := models.Option{
+				Position: 1, Destination: trip.Destination, DestinationAirport: trip.DestinationAirport,
+				DurationNights: trip.DurationNights, EmbarkingDate: trip.EmbarkingDate, ReturningDate: trip.ReturningDate,
+				ActivityDescription: trip.ActivityDescription, CulinaryDescription: trip.CulinaryDescription,
+			}
+			if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"options": []models.Option{opt}}); err != nil {
+				return err
+			}
+			return b.selectOption(ctx, trip, 1)
+		}
+		return b.say(ctx, trip.GroupID, "I need a city and dates before I can book flights and a hotel. Tag me with those and I'll go.", nil)
+	}
+}
+
+func bookableOption(trip *models.Trip) int {
+	if trip == nil {
+		return 0
+	}
+	if len(trip.Options) == 1 {
+		return trip.Options[0].Position
+	}
+	dest := strings.TrimSpace(trip.Destination)
+	if dest == "" {
+		if o := trip.ChosenOption(); o != nil {
+			return o.Position
+		}
+		return 0
+	}
+	for _, o := range trip.Options {
+		if strings.EqualFold(strings.TrimSpace(o.Destination), dest) {
+			return o.Position
+		}
+	}
+	if o := trip.ChosenOption(); o != nil && o.Position > 0 {
+		return o.Position
+	}
+	return 0
 }
 
 func tripDestination(trip *models.Trip) string {
@@ -1726,6 +1806,10 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 	if err := b.say(ctx, trip.GroupID, "On it — booking now.", nil); err != nil {
 		return err
 	}
+	_ = b.dashboardEvent(ctx, trip, "booking.started", map[string]any{"message": "Booking flights and the stay"})
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "running", "Booking the selected flights"); err != nil {
+		return err
+	}
 
 	// Flights: skip legs already booked (makes ✅-to-retry safe after a hotel failure).
 	flights := append([]models.Flight(nil), trip.Flights...)
@@ -1756,6 +1840,8 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 	if trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"flights": flights}); err != nil {
 		return err
 	}
+	_ = b.dashboardTask(ctx, trip, "flight-prices", "completed", "Flights booked")
+	_ = b.dashboardTask(ctx, trip, "hotel-location", "running", "Booking the stay")
 
 	// Hotel: Skyvern (or mock). Starts instantly, then we wait for the browser to finish.
 	var hotel models.HotelOffer
@@ -1850,6 +1936,8 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 	if _, err := store.SetState(ctx, b.Store, trip.ID, models.Booked, map[string]any{"itinerary": newItin}); err != nil {
 		return err
 	}
+	_ = b.dashboardTask(ctx, trip, "hotel-location", "completed", "Stay booked")
+	_ = b.dashboardEvent(ctx, trip, "session.completed", map[string]any{"message": "Flights and stay booked"})
 
 	var embarkRef, returnRef string
 	for _, f := range flights {

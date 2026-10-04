@@ -298,10 +298,13 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 		}
 		agent, _ := payload["agentType"].(string)
 		s.Recordings[agent] = payload
-	case "planning.started":
-		s.Planning = "running"
-		s.Session.Status = "planning"
-		s.Session.Message = "Building your itinerary."
+	case "booking.started":
+		s.Session.Status = "booking"
+		s.Session.Message = "Booking flights and the stay."
+		s.Flight = "running"
+		s.FlightMessage = "Booking the selected flights"
+		s.Hotel = "running"
+		s.HotelMessage = "Booking the stay"
 	case "planning.task.updated":
 		task, _ := payload["taskId"].(string)
 		status, _ := payload["status"].(string)
