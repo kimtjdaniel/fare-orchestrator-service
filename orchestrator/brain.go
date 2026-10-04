@@ -455,7 +455,7 @@ func (b *Brain) Handle(ctx context.Context, m models.IncomingMessage) {
 	if !m.Tagged && b.mentionRe.MatchString(m.Text) {
 		m.Tagged = true
 	}
-	if shouldBatchMention(m) {
+	if shouldBatchMention(m) && !b.hasPendingExpense(ctx, m.GroupID) {
 		b.enqueueTagged(ctx, m)
 		return
 	}
@@ -467,7 +467,7 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 		return false
 	}
 	// Each explicit trip request gets its own session, even in a burst of group messages.
-	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) || activityReplacementRe.MatchString(m.Text) || strings.Contains(strings.ToLower(m.Text), " replacement ") {
+	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) || activityReplacementRe.MatchString(m.Text) || strings.Contains(strings.ToLower(m.Text), " replacement ") || expenseMessageRe.MatchString(m.Text) || expenseReplyRe.MatchString(m.Text) {
 		return false
 	}
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
@@ -578,6 +578,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	sentAt := models.Now()
 	if m.Timestamp != 0 {
 		sentAt = time.Unix(m.Timestamp, 0).UTC()
+	}
+	if handled, err := b.handleExpenseMessage(ctx, trip, m); err != nil || handled {
+		return err
 	}
 	tripID := ""
 	if trip != nil {

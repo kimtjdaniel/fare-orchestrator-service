@@ -115,6 +115,8 @@ func main() {
 	mux.HandleFunc("GET /dashboard/trips", listDashboardTripsHandler(brain))
 	mux.HandleFunc("GET /dashboard/trips/{gid}", getDashboardTripHandler(brain))
 	mux.HandleFunc("POST /dashboard/trips/{gid}", postDashboardActHandler(brain))
+	mux.HandleFunc("GET /groups/{gid}/sessions/{sid}/expenses", getExpensesHandler(brain))
+	mux.HandleFunc("POST /groups/{gid}/sessions/{sid}/expenses", postExpenseHandler(brain))
 	mux.HandleFunc("POST /groups/{gid}/sessions/{sid}/retry-flight", retryFlightHandler(brain))
 	mux.HandleFunc("POST /groups/{gid}/sessions/{sid}/skip-flight", skipFlightHandler(brain))
 	mux.HandleFunc("PUT /sessions/whatsapp", putWhatsAppSessionHandler(st))
@@ -462,6 +464,25 @@ func postDashboardActHandler(brain *orchestrator.Brain) http.HandlerFunc {
 			return
 		}
 		view, err := brain.DashboardAct(r.Context(), r.PathValue("gid"), body)
+		writeDash(w, err, view)
+	}
+}
+
+func getExpensesHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		view, err := brain.ExpenseView(r.Context(), r.PathValue("gid"), r.PathValue("sid"))
+		writeDash(w, err, view)
+	}
+}
+
+func postExpenseHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid expense request"})
+			return
+		}
+		view, err := brain.ExpenseAct(r.Context(), r.PathValue("gid"), r.PathValue("sid"), body)
 		writeDash(w, err, view)
 	}
 }

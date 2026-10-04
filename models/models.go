@@ -258,16 +258,17 @@ func (m *IncomingMessage) UnmarshalJSON(data []byte) error {
 // ---------- stored records ----------
 
 type Message struct {
-	ID         string    `json:"id,omitempty" bson:"_id,omitempty"`
-	GroupID    string    `json:"group_id" bson:"group_id"`
-	TripID     string    `json:"trip_id,omitempty" bson:"trip_id,omitempty"`
-	ExternalID string    `json:"external_id,omitempty" bson:"external_id,omitempty"`
-	SenderID   string    `json:"sender_id" bson:"sender_id"`
-	SenderName string    `json:"sender_name" bson:"sender_name"`
-	Text       string    `json:"text" bson:"text"`
-	Tagged     bool      `json:"tagged" bson:"tagged"`
-	IsBot      bool      `json:"is_bot" bson:"is_bot"`
-	SentAt     time.Time `json:"sent_at" bson:"sent_at"`
+	ExpenseMessage bool      `json:"-" bson:"expense_message,omitempty"`
+	ID             string    `json:"id,omitempty" bson:"_id,omitempty"`
+	GroupID        string    `json:"group_id" bson:"group_id"`
+	TripID         string    `json:"trip_id,omitempty" bson:"trip_id,omitempty"`
+	ExternalID     string    `json:"external_id,omitempty" bson:"external_id,omitempty"`
+	SenderID       string    `json:"sender_id" bson:"sender_id"`
+	SenderName     string    `json:"sender_name" bson:"sender_name"`
+	Text           string    `json:"text" bson:"text"`
+	Tagged         bool      `json:"tagged" bson:"tagged"`
+	IsBot          bool      `json:"is_bot" bson:"is_bot"`
+	SentAt         time.Time `json:"sent_at" bson:"sent_at"`
 }
 
 func ParseDate(s string) (time.Time, error) {

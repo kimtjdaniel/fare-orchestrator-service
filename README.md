@@ -508,3 +508,37 @@ selection explanation, since either recommendation may depend on the total
 budget. Selecting the same offer retains them. Activity edits and undo preserve
 only reasons whose offer IDs still match. Existing plans without reasons remain
 viewable; no additional model calls or travel-service changes are required.
+
+## Shared expenses
+
+Recorded expenses have a separate ledger for each group and dashboard session in Mongo's
+`expense_ledgers` collection. In-memory mode uses the same operations but loses data on restart.
+Travel quotes and their existing split are unchanged. Active trips, including Booked trips,
+can record expenses; historical sessions and Cancelled trips are read-only.
+
+In WhatsApp, try `@fare I paid $84.50 for dinner, split with everyone`. Fare summarizes the
+amount, payer and exact shares before saving. Reply naturally to confirm, correct or dismiss
+your own draft. Missing details are collected before presenting that confirmation.
+`@fare show expenses` returns recorded expenses and balances; removal also requires confirmation.
+The dashboard Money tab records on form submission and confirms deletion inline.
+
+V1 supports CAD, one payer per expense and equal splits between selected known participants.
+Amounts are stored as integer cents; remainder cents are assigned in stable member-ID order.
+Saved allocations and member names remain fixed when the roster changes. Participants need
+a WhatsApp ID or an unambiguous matching roster ID. Repayments, receipts, currency conversion
+and unequal splits are not tracked.
+
+API: `GET /groups/{gid}/sessions/{sid}/expenses` returns the ledger view. `POST` accepts an
+`operation_id` UUID, `expected_revision`, `actor_id`, and either:
+
+```json
+{"action":"add","description":"Dinner","amount":"84.50","payer_id":"member-id","member_ids":["member-id","other-id"]}
+```
+
+Or `{"action":"delete","expense_id":"expense-uuid"}`. Reuse the same operation ID and
+revision when retrying an unchanged request; conflicts return 409 and require a refresh.
+WhatsApp message IDs and dashboard operation IDs are saved with ledger changes to prevent
+duplicate writes. Notification failures do not roll back saved expenses; the dashboard
+returns a WhatsApp warning. The dashboard keeps an uncertain request unchanged until it
+can retry the original operation. Refreshing or leaving the view clears that local request;
+check the recorded list before submitting it again.

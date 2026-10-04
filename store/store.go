@@ -20,6 +20,7 @@ import (
 )
 
 var ErrItineraryConflict = errors.New("plan changed — refresh and try again")
+var ErrExpenseConflict = errors.New("expenses changed — refresh and try again")
 
 type Store interface {
 	Connect(ctx context.Context) error
@@ -27,6 +28,7 @@ type Store interface {
 
 	// SaveMessage returns false if this external_id was already saved (duplicate delivery).
 	SaveMessage(ctx context.Context, msg *models.Message) (bool, error)
+	GetMessageByExternalID(ctx context.Context, groupID, externalID string) (*models.Message, error)
 	GetMessages(ctx context.Context, groupID string, since *time.Time, limit int, includeBot bool) ([]models.Message, error)
 
 	// CreateTrip gets-or-creates the group's singleton trip document.
@@ -38,6 +40,9 @@ type Store interface {
 	ResetTrip(ctx context.Context, tripID, groupName string) (*models.Trip, error)
 	UpdateTrip(ctx context.Context, tripID string, fields map[string]any) (*models.Trip, error)
 	UpdateItinerary(ctx context.Context, expected *models.Trip, itinerary map[string]any) (*models.Trip, error)
+	GetExpenseLedger(ctx context.Context, groupID, sessionID string) (*models.ExpenseLedger, error)
+	FindExpenseLedgerForOperation(ctx context.Context, groupID, operationID string) (*models.ExpenseLedger, error)
+	SaveExpenseLedger(ctx context.Context, ledger *models.ExpenseLedger, expectedRevision int64) (*models.ExpenseLedger, error)
 
 	GetWhatsAppSession(ctx context.Context, id string) (*models.WhatsAppSession, error)
 	SaveWhatsAppSession(ctx context.Context, id string, data map[string]any) (*models.WhatsAppSession, error)

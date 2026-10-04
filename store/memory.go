@@ -16,10 +16,11 @@ type MemoryStore struct {
 	messages []models.Message
 	trips    map[string]*models.Trip // keyed by group_id (== trip.ID, singleton per group)
 	sessions map[string]*models.WhatsAppSession
+	expenses map[string]*models.ExpenseLedger
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{trips: map[string]*models.Trip{}, sessions: map[string]*models.WhatsAppSession{}}
+	return &MemoryStore{trips: map[string]*models.Trip{}, sessions: map[string]*models.WhatsAppSession{}, expenses: map[string]*models.ExpenseLedger{}}
 }
 
 func (s *MemoryStore) Connect(ctx context.Context) error { return nil }
@@ -39,6 +40,21 @@ func (s *MemoryStore) SaveMessage(ctx context.Context, msg *models.Message) (boo
 	cp.ID = uuid.NewString()
 	s.messages = append(s.messages, cp)
 	return true, nil
+}
+
+func (s *MemoryStore) GetMessageByExternalID(ctx context.Context, groupID, externalID string) (*models.Message, error) {
+	if externalID == "" {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, message := range s.messages {
+		if message.GroupID == groupID && message.ExternalID == externalID {
+			copy := message
+			return &copy, nil
+		}
+	}
+	return nil, nil
 }
 
 func (s *MemoryStore) GetMessages(ctx context.Context, groupID string, since *time.Time, limit int, includeBot bool) ([]models.Message, error) {

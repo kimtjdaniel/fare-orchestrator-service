@@ -22,6 +22,7 @@ type MongoStore struct {
 	trips    *mongo.Collection
 	msgs     *mongo.Collection
 	sessions *mongo.Collection
+	expenses *mongo.Collection
 }
 
 func NewMongoStore(uri, dbName string) *MongoStore {
@@ -41,6 +42,15 @@ func (s *MongoStore) Connect(ctx context.Context) error {
 	s.trips = db.Collection("trips")
 	s.msgs = db.Collection("messages")
 	s.sessions = db.Collection("whatsapp_sessions")
+	s.expenses = db.Collection("expense_ledgers")
+	_, err = s.expenses.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "group_id", Value: 1}, {Key: "operations.message_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+			bson.D{{Key: "operations.message_id", Value: bson.D{{Key: "$exists", Value: true}}}}),
+	})
+	if err != nil {
+		return err
+	}
 
 	// Idempotent index creation.
 	_, err = s.msgs.Indexes().CreateMany(ctx, []mongo.IndexModel{
@@ -78,6 +88,21 @@ func (s *MongoStore) SaveMessage(ctx context.Context, msg *models.Message) (bool
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *MongoStore) GetMessageByExternalID(ctx context.Context, groupID, externalID string) (*models.Message, error) {
+	if externalID == "" {
+		return nil, nil
+	}
+	var message models.Message
+	err := s.msgs.FindOne(ctx, bson.M{"group_id": groupID, "external_id": externalID}).Decode(&message)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
 }
 
 func (s *MongoStore) GetMessages(ctx context.Context, groupID string, since *time.Time, limit int, includeBot bool) ([]models.Message, error) {
