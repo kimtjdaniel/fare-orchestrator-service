@@ -114,9 +114,15 @@ func SummaryMessage(option models.Option, itinerary map[string]any, people []mod
 	}
 	if spend.HasFlights {
 		lines = append(lines, spend.FlightLine())
+		if reason := models.SelectedTravelReason(itinerary, "flight"); reason != "" {
+			lines = append(lines, "Why this flight: "+reason)
+		}
 	}
 	if spend.HasHotel {
 		lines = append(lines, spend.HotelLine(hotel, option.DurationNights))
+		if reason := models.SelectedTravelReason(itinerary, "hotel"); reason != "" {
+			lines = append(lines, "Why this stay: "+reason)
+		}
 	}
 	if spend.Ok() {
 		lines = append(lines, "", spend.TotalLine(), spend.FoodLine())

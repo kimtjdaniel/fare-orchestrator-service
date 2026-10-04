@@ -105,7 +105,11 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 	}
 	itinerary["advisor"] = out
 	itinerary["dashboard_plan"] = plan
-	if _, err = b.Store.UpdateTrip(ctx, t.ID, map[string]any{"itinerary": itinerary}); err != nil {
+	delete(itinerary, "activity_edit_undo")
+	itinerary = models.ScheduleItinerary(t, itinerary, true)
+	plan = asMapAny(itinerary["dashboard_plan"])
+	plan["itineraryRevision"] = t.ItineraryRevision + 1
+	if _, err = b.Store.UpdateItinerary(ctx, t, itinerary); err != nil {
 		return err
 	}
 	if err = b.dashboardTask(ctx, t, "daily-schedule", "completed", "Your day-by-day itinerary is ready"); err != nil {

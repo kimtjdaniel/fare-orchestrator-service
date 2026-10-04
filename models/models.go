@@ -423,9 +423,10 @@ type Trip struct {
 	Flights        []Flight        `json:"flights,omitempty" bson:"flights,omitempty"`
 	Accommodations []Accommodation `json:"accommodations,omitempty" bson:"accommodations,omitempty"`
 
-	Itinerary  map[string]any `json:"itinerary,omitempty" bson:"itinerary,omitempty"`
-	ApprovedBy string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
-	ApprovedAt *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
+	ItineraryRevision int64          `json:"itinerary_revision" bson:"itinerary_revision"`
+	Itinerary         map[string]any `json:"itinerary,omitempty" bson:"itinerary,omitempty"`
+	ApprovedBy        string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
+	ApprovedAt        *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
 	// PendingApprover holds the name of whoever voted/said "yes, book it" while no payer was
 	// designated yet. Once a payer is picked, this is used to finish the booking they already approved.
 	PendingApprover    string              `json:"pending_approver,omitempty" bson:"pending_approver,omitempty"`

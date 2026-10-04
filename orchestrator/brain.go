@@ -467,7 +467,7 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 		return false
 	}
 	// Each explicit trip request gets its own session, even in a burst of group messages.
-	if looksLikeNewTripRequest(m.Text) {
+	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) {
 		return false
 	}
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
@@ -660,6 +660,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		return b.runIntakeTurn(ctx, trip, m)
 	}
 
+	if looksLikeTripActivityEdit(trip, m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
+		return b.editActivityMessage(ctx, trip, m)
+	}
 	if trip.State == models.Booked {
 		if looksLikeAdvisorAsk(m.Text) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
 			return b.answerDuringIntake(ctx, trip, m)
@@ -1680,23 +1683,29 @@ func (b *Brain) generateAdvisorItinerary(ctx context.Context, trip *models.Trip,
 	if err != nil {
 		return trip, nil, err
 	}
-	itin := trip.Itinerary
+
+	itin := cloneMap(trip.Itinerary)
 	if itin == nil {
 		itin = map[string]any{}
 	}
 	itin["advisor"] = out
-	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
-		"itinerary":       itin,
-		"duration_nights": days,
-		"destination":     dest,
-	})
+	delete(itin, "activity_edit_undo")
+	itin = models.ScheduleItinerary(trip, itin, true)
+	if plan := asMapAny(itin["dashboard_plan"]); plan != nil {
+		plan["itineraryRevision"] = trip.ItineraryRevision + 1
+	}
+	updated, err := b.Store.UpdateItinerary(ctx, trip, itin)
 	if err != nil {
 		return trip, nil, err
 	}
-	if updated != nil {
-		trip = updated
+	trip, err = b.Store.UpdateTrip(ctx, updated.ID, map[string]any{"duration_nights": days, "destination": dest})
+	if err != nil {
+		return updated, nil, err
 	}
-	return trip, out, nil
+	if err = b.dashboardEvent(ctx, trip, "itinerary.updated", map[string]any{"plan": itin["dashboard_plan"]}); err != nil {
+		return trip, nil, err
+	}
+	return trip, asMapAny(itin["advisor"]), nil
 }
 
 func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
@@ -2188,12 +2197,15 @@ func (b *Brain) lockSearchedPlan(ctx context.Context, trip *models.Trip, option 
 	}
 	var offer models.FlightOffer
 	var hotel models.HotelOffer
-	var selectionReason string
+	var selectionReason travelSelectionReasons
 	var err error
 	if skipFlights || len(offers) == 0 {
 		hotel = cheapestHotel(hotels)
 		offer = models.FlightOffer{OfferID: "skipped", Airline: "Skipped", Summary: "Flights skipped", Currency: "CAD", Origin: originAirportCode(trip.Origin, people), Destination: option.DestinationAirport}
-		selectionReason = "Flights were skipped. The stay stays in the plan without a fare."
+		selectionReason = travelSelectionReasons{
+			Hotel:    "This stay was selected by total price from the saved hotel results; flights are excluded.",
+			Combined: "Flights were skipped. The stay stays in the plan without a fare.",
+		}
 	} else {
 		offer, hotel, selectionReason, err = b.selectTravelPlan(ctx, trip, offers, hotels)
 		if err != nil {
@@ -2235,12 +2247,14 @@ func (b *Brain) lockSearchedPlan(ctx context.Context, trip *models.Trip, option 
 	returnOffer := offer.ReturningOffer()
 
 	planBody := map[string]any{
-		"hotel":             hotel,
-		"per_person":        preview.PerPerson,
-		"group_total":       preview.GroupTotal,
-		"hotel_options":     hotels,
-		"selected_hotel_id": hotel.OfferID,
-		"selection_reason":  selectionReason,
+		"hotel":                 hotel,
+		"per_person":            preview.PerPerson,
+		"group_total":           preview.GroupTotal,
+		"hotel_options":         hotels,
+		"selected_hotel_id":     hotel.OfferID,
+		"selection_reason":      selectionReason.Combined,
+		"hotel_reason":          selectionReason.Hotel,
+		"hotel_reason_offer_id": hotel.OfferID,
 	}
 	if offer.OfferID != "skipped" {
 		planBody["flights"] = map[string]any{
@@ -2250,6 +2264,8 @@ func (b *Brain) lockSearchedPlan(ctx context.Context, trip *models.Trip, option 
 		}
 		planBody["flight_options"] = offers
 		planBody["selected_flight_id"] = offer.OfferID
+		planBody["flight_reason"] = selectionReason.Flight
+		planBody["flight_reason_offer_id"] = offer.OfferID
 	}
 	itinMap, err := structToMap(planBody)
 	if err != nil {
