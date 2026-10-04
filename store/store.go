@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
+
 	"fare-brain/models"
 	"fare-brain/state"
 )
@@ -28,6 +30,10 @@ type Store interface {
 	// SaveMessage returns false if this external_id was already saved (duplicate delivery).
 	SaveMessage(ctx context.Context, msg *models.Message) (bool, error)
 	GetMessages(ctx context.Context, groupID string, since *time.Time, limit int, includeBot bool) ([]models.Message, error)
+	// Session history is complete and ordered; no message-count or text limit applies.
+	GetSessionMessages(ctx context.Context, groupID, sessionID string) ([]models.Message, error)
+	AssignMessageSession(ctx context.Context, groupID, sessionID string, messageIDs []string) error
+	BindUnassignedMessages(ctx context.Context, groupID, sessionID string, since *time.Time) error
 
 	// CreateTrip gets-or-creates the group's singleton trip document.
 	CreateTrip(ctx context.Context, groupID, groupName string) (*models.Trip, error)
@@ -94,6 +100,7 @@ var allowedTripFields = map[string]bool{
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 	"pending_trip_request": true,
+	"session_id":           true,
 	"organizer_wa_id":      true, "intake": true, "pending_question": true, "conflicts": true,
 	"intake_polls": true, "last_agent_text": true,
 }
@@ -106,6 +113,8 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			return fmt.Errorf("unknown trip field: %s", k)
 		}
 		switch k {
+		case "session_id":
+			trip.SessionID, _ = v.(string)
 		case "group_name":
 			trip.GroupName, _ = v.(string)
 		case "state":
@@ -243,6 +252,7 @@ func resetTrip(trip *models.Trip, groupName string) {
 	now := models.Now()
 	*trip = models.Trip{
 		ID: trip.ID, GroupID: trip.GroupID, GroupName: groupName, State: models.Collecting,
+		SessionID:    uuid.NewString(),
 		Participants: []models.Participant{}, Options: []models.Option{},
 		Flights: []models.Flight{}, Accommodations: []models.Accommodation{},
 		HistoryStart: &now, CreatedAt: trip.CreatedAt, UpdatedAt: now,

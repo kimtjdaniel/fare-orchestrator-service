@@ -1,5 +1,5 @@
-// Package config holds all settings in one place, read from environment / .env. Defaults = fully
-// mocked, no keys needed.
+// Package config holds settings read from environment / .env. Live services are
+// the default; offline mocks require an explicit opt-in.
 package config
 
 import (
@@ -18,9 +18,10 @@ type Settings struct {
 	MockBrowser             bool
 	MockBookingDelaySeconds float64
 
-	GeminiAPIKey string
-	GeminiModel  string
-	LLMCacheDir  string
+	GeminiAPIKey    string
+	GeminiModel     string
+	LLMCacheDir     string
+	LLMContextBytes int
 
 	MongoURI string
 	MongoDB  string
@@ -129,14 +130,15 @@ func Load() *Settings {
 		}
 	}
 	return &Settings{
-		MockLLM:                 boolEnv("MOCK_LLM", true),
-		MockTravel:              boolEnv("MOCK_TRAVEL", true),
+		MockLLM:                 boolEnv("MOCK_LLM", false),
+		MockTravel:              boolEnv("MOCK_TRAVEL", false),
 		MockBrowser:             boolEnv("MOCK_BROWSER", true),
 		MockBookingDelaySeconds: floatEnv("MOCK_BOOKING_DELAY", 3),
 
-		GeminiAPIKey: joinGeminiKeys(),
-		GeminiModel:  getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
-		LLMCacheDir:  getenv("LLM_CACHE_DIR", ""),
+		GeminiAPIKey:    joinGeminiKeys(),
+		GeminiModel:     getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+		LLMCacheDir:     getenv("LLM_CACHE_DIR", ""),
+		LLMContextBytes: intEnv("LLM_CONTEXT_BYTES", 96000),
 
 		MongoURI: firstNonEmpty(getenv("MONGODB_URI", ""), getenv("MONGO_URI", ""), getenv("MONGODB_URL", "")),
 		MongoDB:  getenv("MONGODB_DB", "fare"),

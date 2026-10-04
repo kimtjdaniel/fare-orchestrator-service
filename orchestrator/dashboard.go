@@ -72,7 +72,7 @@ func (b *Brain) finishDashboard(ctx context.Context, t *models.Trip, flight mode
 	if flight.OfferID == "skipped" {
 		user += "\nFlights were skipped. Do not invent flights or fares. Plan each day around the hotel."
 	}
-	out, err := b.LLM.Structured(ctx, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")), []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
+	out, err := b.structured(ctx, t, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")), []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
 	if err != nil {
 		return err
 	}

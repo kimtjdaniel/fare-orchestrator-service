@@ -38,7 +38,7 @@ const (
 	fConstraints    = "constraints"
 )
 
-const llmCallTimeout = 8 * time.Second   // spec §7.3
+const llmCallTimeout = 60 * time.Second
 const pollWaitTimeout = 10 * time.Minute // spec §4.2
 
 // ------------------------------------------------------------------ entry points
@@ -97,10 +97,8 @@ func isIntakePoll(trip *models.Trip, pollMessageID string) bool {
 	return findIntakePoll(trip, pollMessageID) != nil
 }
 
-// findIntakePoll matches an incoming vote to the open poll it belongs to. The real WhatsApp
-// message id isn't known until the *first* vote arrives (Messenger.SendPoll returns only an
-// error, no id) — so an open poll with no id recorded yet is presumed to be the one and only
-// thing a vote could be answering (the controller never has more than one poll open at a time).
+// findIntakePoll matches only the exact message ID returned when the poll was
+// posted. Unrelated group polls never answer a pending intake question.
 func findIntakePoll(trip *models.Trip, pollMessageID string) *models.IntakePoll {
 	if trip == nil {
 		return nil
@@ -110,7 +108,7 @@ func findIntakePoll(trip *models.Trip, pollMessageID string) *models.IntakePoll 
 		if p.Closed {
 			continue
 		}
-		if p.PollMessageID == pollMessageID || p.PollMessageID == "" {
+		if pollMessageID != "" && p.PollMessageID == pollMessageID {
 			return p
 		}
 	}
@@ -123,31 +121,12 @@ func findIntakePoll(trip *models.Trip, pollMessageID string) *models.IntakePoll 
 // clearing, next-missing-field, or readiness. extraction may be nil (e.g. after a poll vote,
 // where there's no free-text message to extract from).
 func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extraction *intakeExtraction) error {
-	if conflicts := detectConflicts(trip); len(conflicts) > 0 {
-		trip = b.saveConflicts(ctx, trip, conflicts)
-		return b.writeAndSend(ctx, trip, "RESOLVE_CONFLICT", conflicts[0].Description, nil)
-	}
-	if len(trip.Conflicts) > 0 {
-		trip = b.clearResolvedConflicts(ctx, trip)
-	}
-
-	if trip.PendingQuestion != nil {
-		answered := extraction != nil && extraction.AnswersPendingQuestion
-		if !answered && !fieldSatisfied(trip, trip.PendingQuestion.Field) {
-			return nil // spec §4 step 5: not an answer, not tagged-and-relevant -> stay silent, don't nag
-		}
-		trip = b.clearPendingQuestion(ctx, trip)
-	}
-
-	if extraction != nil && extraction.Approval == "yes" && readyToSearch(trip) {
-		return b.handoffToSearch(ctx, trip)
-	}
-
-	missing := nextMissingField(trip)
-	if missing == "" {
-		return b.confirmReady(ctx, trip)
-	}
-	return b.askField(ctx, trip, missing)
+	// Legacy intake polls remain readable, but completion returns to the same
+	// conversational planner instead of restarting a fixed questionnaire.
+	return b.plan(ctx, trip, "Continue from the latest intake answer or poll result. Use confirmed intake fields and ask only for genuinely missing planning information.", models.IncomingMessage{
+		GroupID: trip.GroupID, GroupName: trip.GroupName, SenderName: "group",
+		Text: "Continue planning from the recorded answers.", Tagged: true,
+	})
 }
 
 // ------------------------------------------------------------------ readiness (§4.5)
@@ -395,7 +374,7 @@ func (b *Brain) extractIntake(ctx context.Context, trip *models.Trip, text, send
 	}
 	system := prompts.IntakeExtractSystem(b.Config.BotName, b.today().Format("2006-01-02"), b.Config.Timezone, roster, tripStateJSON(trip), pending)
 
-	out, err := b.LLM.Structured(cctx, system, []llm.Message{{Role: "user", Content: text}}, toSchema(prompts.IntakeExtract))
+	out, err := b.structured(cctx, trip, system, []llm.Message{{Role: "user", Content: text}}, toSchema(prompts.IntakeExtract))
 	if err != nil {
 		return nil, err
 	}
@@ -744,7 +723,7 @@ func (b *Brain) proposeDestinations(ctx context.Context, trip *models.Trip) ([]s
 		},
 		"required": []string{"cities"}, "additionalProperties": false,
 	}}
-	out, err := b.LLM.Structured(cctx, system, []llm.Message{{Role: "user", Content: tripStateJSON(trip)}}, schema)
+	out, err := b.structured(cctx, trip, system, []llm.Message{{Role: "user", Content: tripStateJSON(trip)}}, schema)
 	if err != nil {
 		return nil, err
 	}
@@ -815,8 +794,11 @@ func (b *Brain) postIntakePoll(ctx context.Context, trip *models.Trip, field, qu
 	if err != nil {
 		return err
 	}
+	if err := b.recordBotMessage(ctx, trip.GroupID, "Poll: "+question+"\nOptions: "+strings.Join(options, " | "), pollID); err != nil {
+		return err
+	}
 	if strings.TrimSpace(text) != "" {
-		if err := b.Messenger.Send(ctx, trip.GroupID, text, nil); err != nil {
+		if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
 			slog.Warn("failed to send poll intro", "group_id", trip.GroupID, "err", err)
 		}
 	}
@@ -992,9 +974,9 @@ func parseBudgetRangeLabel(label string) (lo, hi float64) {
 func (b *Brain) writeIntake(ctx context.Context, trip *models.Trip, intent, slot string, _ *models.Trip) (text, pollQuestion string, pollOptions []string, pollMulti bool, err error) {
 	cctx, cancel := context.WithTimeout(ctx, llmCallTimeout)
 	defer cancel()
-	recent := "(none)"
+	recent := "Persistent conversation memory and recent original turns are included with this request."
 	system := prompts.IntakeWriterSystem(b.Config.BotName, intent, slot, tripStateJSON(trip), recent, trip.LastAgentText)
-	out, err := b.LLM.Structured(cctx, system, []llm.Message{{Role: "user", Content: slot}}, toSchema(prompts.IntakeWriter))
+	out, err := b.structured(cctx, trip, system, []llm.Message{{Role: "user", Content: slot}}, toSchema(prompts.IntakeWriter))
 	if err != nil {
 		return "", "", nil, false, err
 	}
@@ -1010,35 +992,10 @@ func (b *Brain) writeIntake(ctx context.Context, trip *models.Trip, intent, slot
 	return w.Text, w.PollQuestion, w.PollOptions, w.PollMulti, nil
 }
 
-// writeAndSend calls the writer for a plain-text (non-poll) intent and sends it, with the §7.4
-// watchdog: if the writer hasn't produced a message within 20s, send the one permitted literal
-// fallback instead.
+// Intake contributes its required outcome to the same conversation writer.
+// There is no detached writer goroutine or canned timeout acknowledgement.
 func (b *Brain) writeAndSend(ctx context.Context, trip *models.Trip, intent, slot string, _ any) error {
-	type result struct {
-		text string
-		err  error
-	}
-	done := make(chan result, 1)
-	go func() {
-		text, _, _, _, err := b.writeIntake(ctx, trip, intent, slot, trip)
-		done <- result{text, err}
-	}()
-
-	select {
-	case r := <-done:
-		if r.err != nil || strings.TrimSpace(r.text) == "" {
-			slog.Warn("intake writer failed", "group_id", trip.GroupID, "intent", intent, "err", r.err)
-			return nil
-		}
-		if err := b.Messenger.Send(ctx, trip.GroupID, r.text, nil); err != nil {
-			return err
-		}
-		_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"last_agent_text": r.text})
-		return nil
-	case <-time.After(20 * time.Second): // spec §7.4 watchdog
-		slog.Warn("intake turn watchdog fired", "group_id", trip.GroupID, "intent", intent)
-		return b.Messenger.Send(ctx, trip.GroupID, "Give me a sec, still working on it", nil)
-	}
+	return b.say(ctx, trip.GroupID, "Intake outcome: "+intent+". "+slot, nil)
 }
 
 func (b *Brain) confirmReady(ctx context.Context, trip *models.Trip) error {

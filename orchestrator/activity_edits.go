@@ -189,7 +189,7 @@ func (b *Brain) editActivityMessage(ctx context.Context, trip *models.Trip, m mo
 			return err
 		}
 		user := fmt.Sprintf("Request: %s\nCurrent activities (day 1 is the first listed day): %s", m.Text, raw)
-		out, err := b.LLM.Structured(ctx, prompts.ActivityEditSystem, []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.ActivityEdit))
+		out, err := b.structured(ctx, trip, prompts.ActivityEditSystem, []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.ActivityEdit))
 		if err != nil {
 			return b.say(ctx, trip.GroupID, "I couldn’t interpret that edit. Please try again with the activity and day.", nil)
 		}

@@ -2,7 +2,9 @@ package orchestrator
 
 import (
 	"context"
-	"log/slog"
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -11,7 +13,6 @@ import (
 	"fare-brain/formatting"
 	"fare-brain/messaging"
 	"fare-brain/models"
-	"fare-brain/store"
 )
 
 var (
@@ -249,28 +250,11 @@ func (b *Brain) pollOptions(ctx context.Context, trip *models.Trip, options []mo
 }
 
 func (b *Brain) askOrigin(ctx context.Context, trip *models.Trip) error {
-	if err := b.say(ctx, trip.GroupID, "Where's everyone flying from? Tap one if it's easier.", nil); err != nil {
-		return err
-	}
-	return b.sendPoll(ctx, trip.GroupID, "Flying from?", []string{
-		"Vancouver (YVR)",
-		"Toronto (YYZ)",
-		"Calgary (YYC)",
-		"Montreal (YUL)",
-		"We're coming from different cities",
-	}, "origin", trip.ID)
+	return b.say(ctx, trip.GroupID, "Ask for the missing departure city for each traveler. Use existing preferences; do not suggest arbitrary origins.", nil)
 }
 
 func (b *Brain) askDates(ctx context.Context, trip *models.Trip) error {
-	if err := b.say(ctx, trip.GroupID, "What dates actually work? Here's a poll if you haven't locked anything in.", nil); err != nil {
-		return err
-	}
-	return b.sendPoll(ctx, trip.GroupID, "Which dates feel closest?", []string{
-		"This coming weekend",
-		"Next weekend",
-		"A long weekend in 2–3 weeks",
-		"Whenever our calendars overlap",
-	}, "dates", trip.ID)
+	return b.say(ctx, trip.GroupID, "Ask which travel dates work for the group. Keep any dates and duration already supplied; do not invent a weekend.", nil)
 }
 
 func (b *Brain) askBudget(ctx context.Context, trip *models.Trip) error {
@@ -337,11 +321,21 @@ func (b *Brain) sendPoll(ctx context.Context, groupID, name string, options []st
 	if len(opts) < 2 {
 		return nil
 	}
-	if _, err := b.Messenger.SendPoll(ctx, groupID, messaging.Poll{Name: name, Options: opts}); err != nil {
+	pollID, err := b.Messenger.SendPoll(ctx, groupID, messaging.Poll{Name: name, Options: opts})
+	if err != nil {
+		return err
+	}
+	if err := b.recordBotMessage(ctx, groupID, "Poll: "+name+"\nOptions: "+strings.Join(opts, " | "), pollID); err != nil {
 		return err
 	}
 	if tripID != "" {
-		if _, err := b.Store.UpdateTrip(ctx, tripID, map[string]any{"last_poll": kind}); err != nil {
+		trip, err := b.Store.UpdateTrip(ctx, tripID, map[string]any{"last_poll": kind})
+		if err != nil {
+			return err
+		}
+		if _, err := b.Store.SaveWhatsAppSession(ctx, "poll:"+groupID+":"+pollID, map[string]any{
+			"session_id": trip.SessionID, "kind": kind, "options": opts, "plan_key": pollPlanKey(trip),
+		}); err != nil {
 			return err
 		}
 	}
@@ -455,194 +449,121 @@ func (b *Brain) HandlePollVote(ctx context.Context, vote models.PollVote) {
 	lock := b.lockFor(vote.GroupID)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := b.handlePollVote(ctx, vote); err != nil {
-		slog.Error("failed handling poll vote", "group_id", vote.GroupID, "err", err)
+	ctx = withReplyTurn(ctx)
+	err := b.handlePollVote(ctx, vote)
+	if err == nil {
+		err = b.flushReply(ctx, vote.GroupID)
+	}
+	if err != nil {
+		_ = b.replyUnavailable(ctx, vote.GroupID)
 	}
 }
 
 func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error {
-	selected := ""
-	if len(vote.SelectedOptions) > 0 {
-		selected = strings.TrimSpace(vote.SelectedOptions[0])
-	}
 	trip, err := b.Store.GetTrip(ctx, vote.GroupID)
+	if err != nil || trip == nil {
+		return err
+	}
+	if err := b.ensureSession(ctx, trip); err != nil {
+		return err
+	}
+	// Only a poll sent for this session can drive its workflow. Never interpret
+	// an unrelated group's poll, an old trip's vote, or a poll title as consent.
+	poll, err := b.Store.GetWhatsAppSession(ctx, "poll:"+vote.GroupID+":"+vote.PollMessageID)
 	if err != nil {
 		return err
 	}
-	if trip == nil {
+	legacyIntake := trip.State == models.Collecting && isIntakePoll(trip, vote.PollMessageID)
+	if !legacyIntake && (poll == nil || strAny(poll.Data["session_id"]) != trip.SessionID) {
 		return nil
 	}
-	if trip.State == models.Collecting && isIntakePoll(trip, vote.PollMessageID) {
-		return b.runIntakePollVote(ctx, trip, vote)
-	}
-	if strings.Contains(strings.ToLower(vote.PollName), "paying") {
-		return b.applyPayerVote(ctx, trip, vote, selected)
-	}
-	if trip.PendingChange != nil || trip.LastPoll == "change" {
-		return b.handleChangeVote(ctx, trip, vote, selected)
-	}
-	if selected == "" {
+	if poll != nil && strAny(poll.Data["kind"]) != trip.LastPoll {
 		return nil
 	}
-	sentAt := time.Now().UTC()
+	if poll != nil && strAny(poll.Data["plan_key"]) != pollPlanKey(trip) {
+		return nil
+	}
+	var allowed []string
+	if poll != nil {
+		if err := decodeInto(poll.Data["options"], &allowed); err != nil {
+			return err
+		}
+	} else if p := findIntakePoll(trip, vote.PollMessageID); p != nil {
+		allowed = p.Options
+	}
+	for _, selected := range vote.SelectedOptions {
+		valid := false
+		for _, option := range allowed {
+			if selected == option {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return nil
+		}
+	}
+	sentAt := models.Now()
 	if vote.Timestamp != 0 {
 		sentAt = time.Unix(vote.Timestamp, 0).UTC()
 	}
-	if _, err := b.Store.SaveMessage(ctx, &models.Message{
-		GroupID: vote.GroupID, TripID: trip.ID, ExternalID: vote.PollMessageID + ":" + vote.VoterID + ":" + selected,
-		SenderID: vote.VoterID, SenderName: vote.VoterName, Text: selected, Tagged: true, SentAt: sentAt,
-	}); err != nil {
+	selection := strings.Join(vote.SelectedOptions, " | ")
+	text := "Poll vote: " + vote.PollName + "\nSelected: " + selection
+	isNew, err := b.Store.SaveMessage(ctx, &models.Message{
+		GroupID: vote.GroupID, TripID: trip.ID, SessionID: trip.SessionID,
+		ExternalID: fmt.Sprintf("poll-vote:%s:%s:%d:%s", vote.PollMessageID, vote.VoterID, vote.Timestamp, selection),
+		SenderID:   vote.VoterID, SenderName: vote.VoterName, Text: text, Tagged: true, SentAt: sentAt,
+	})
+	if err != nil || !isNew {
 		return err
 	}
-
-	incoming := models.IncomingMessage{
-		GroupID: vote.GroupID, GroupName: vote.GroupName,
-		SenderID: vote.VoterID, SenderName: vote.VoterName,
-		Text: selected, Tagged: true, Timestamp: vote.Timestamp,
-		AgentID: vote.AgentID,
+	if legacyIntake {
+		return b.runIntakePollVote(ctx, trip, vote)
 	}
-	kind := trip.LastPoll
-	low := strings.ToLower(selected)
-
-	if kind == "finalize" || strings.Contains(low, "search flights") {
-		if strings.Contains(low, "yes") || strings.Contains(low, "search") {
-			return b.startTravelSearch(ctx, trip)
-		}
-		return b.say(ctx, trip.GroupID, "Okay, still planning. Tell me what to change and I'll update the summary.", nil)
+	if len(vote.SelectedOptions) == 0 {
+		return nil
 	}
-
-	if trip.State == models.AwaitingChoice {
-		if opt := matchOptionFromLabel(selected, trip.Options); opt != nil {
-			return b.selectOption(ctx, trip, opt.Position)
-		}
-	}
-	if trip.State == models.AwaitingApproval {
-		if strings.Contains(low, "yes") || strings.Contains(low, "book") {
-			return b.requestBooking(ctx, trip, vote.VoterName)
-		}
-		if strings.Contains(low, "other") || strings.Contains(low, "back") {
-			trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
-			if err != nil {
-				return err
-			}
-			return b.postOptions(ctx, trip, "No worries — here they are again.", trip.Options)
-		}
-	}
-
-	switch kind {
+	selected := vote.SelectedOptions[0]
+	switch strAny(poll.Data["kind"]) {
+	case "payer":
+		return b.applyPayerVote(ctx, trip, vote, selected)
+	case "change":
+		return b.handleChangeVote(ctx, trip, vote, selected)
 	case "options":
 		if trip.State != models.AwaitingChoice {
 			return nil
 		}
-		opt := matchOptionFromLabel(selected, trip.Options)
-		if opt == nil {
-			return b.say(ctx, trip.GroupID, "Didn't catch which trip that was. Reply 1, 2, or 3.", nil)
-		}
-		return b.selectOption(ctx, trip, opt.Position)
-	case "approve":
-		if strings.Contains(low, "yes") || strings.Contains(low, "book") {
-			return b.requestBooking(ctx, trip, vote.VoterName)
-		}
-		if trip.State == models.AwaitingApproval {
-			trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
-			if err != nil {
-				return err
+		for i, label := range allowed {
+			if label == selected && i < len(trip.Options) {
+				return b.selectOption(ctx, trip, trip.Options[i].Position)
 			}
-			return b.postOptions(ctx, trip, "No worries — here they are again.", trip.Options)
 		}
 		return nil
-	case "origin":
-		if strings.Contains(low, "different") {
-			return b.say(ctx, trip.GroupID, "Say where each person is flying from and I'll keep it straight.", nil)
+	case "finalize":
+		if trip.State != models.AwaitingChoice {
+			return nil
 		}
-		h := harvestText(selected, b.today())
-		if hasSharedOrigin(trip.Participants) {
-			label := h.City
-			if label == "" {
-				label = h.Airport
-			}
-			return b.startChangePoll(ctx, trip, incoming, &models.PendingChange{
-				Kind: "origin", Summary: "Fly out of " + label + " instead?", Airport: h.Airport, City: h.City,
-			})
+		if selected == allowed[0] {
+			return b.startTravelSearch(ctx, trip)
 		}
-		people := applyHarvest(trip.Participants, h, []models.GroupMember{
-			{ID: vote.VoterID, Name: vote.VoterName},
-		})
-		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"participants": people, "asked_origin": false}); err != nil {
-			return err
-		}
-		trip.Participants = people
-		return b.plan(ctx, trip, selected, incoming)
-	case "dates":
-		if strings.Contains(low, "overlap") || strings.Contains(low, "whenever") {
-			return b.say(ctx, trip.GroupID, "Drop the dates that actually work and I'll use those.", nil)
-		}
-		start, end := comingWeekend(b.today())
-		if strings.Contains(low, "next weekend") {
-			start = start.AddDate(0, 0, 7)
-			end = end.AddDate(0, 0, 7)
-		} else if strings.Contains(low, "2") || strings.Contains(low, "3") {
-			start = start.AddDate(0, 0, 14)
-			end = end.AddDate(0, 0, 3)
-		}
-		h := harvestedFacts{Dates: dateList(start, end)}
-		if hasAnyDates(trip.Participants) {
-			sum := "Change dates to " + formatting.Dates(h.Dates[0], h.Dates[len(h.Dates)-1]) + " instead?"
-			return b.startChangePoll(ctx, trip, incoming, &models.PendingChange{Kind: "dates", Summary: sum, Dates: h.Dates})
-		}
-		people := applyHarvest(trip.Participants, h, []models.GroupMember{{ID: vote.VoterID, Name: vote.VoterName}})
-		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"participants": people, "asked_dates": false}); err != nil {
-			return err
-		}
-		trip.Participants = people
-		return b.plan(ctx, trip, selected, incoming)
-	case "budget":
-		if trip.BudgetNote != "" && trip.BudgetNote != selected {
-			return b.startChangePoll(ctx, trip, incoming, &models.PendingChange{
-				Kind: "budget", Summary: "Change budget to " + selected + " instead?", Budget: selected,
-			})
-		}
-		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"budget_note": selected}); err != nil {
-			return err
-		}
-		trip.BudgetNote = selected
-		return b.plan(ctx, trip, "Keep it in CAD. Group budget: "+selected, incoming)
-	case "vibe":
-		return b.plan(ctx, trip, "They want a "+selected+" trip", incoming)
-	case "flights":
-		direct := strings.Contains(low, "direct")
-		if trip.FlightsLocked {
-			d := direct
-			return b.startChangePoll(ctx, trip, incoming, &models.PendingChange{
-				Kind: "flights", Summary: "Change the flight preference?", Direct: &d,
-			})
-		}
-		people := trip.Participants
-		for i := range people {
-			people[i].FlightPreferences.IsDirect = direct
-		}
-		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"participants": people, "flights_locked": true}); err != nil {
-			return err
-		}
-		return b.say(ctx, trip.GroupID, "Got it on flights.", nil)
-	default:
-		if trip.State == models.AwaitingChoice {
-			if opt := matchOptionFromLabel(selected, trip.Options); opt != nil {
-				return b.selectOption(ctx, trip, opt.Position)
-			}
-		}
-		if trip.State == models.AwaitingApproval {
-			if strings.Contains(low, "yes") || strings.Contains(low, "book") {
-				return b.requestBooking(ctx, trip, vote.VoterName)
-			}
-			if strings.Contains(low, "other") || strings.Contains(low, "back") {
-				trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
-				if err != nil {
-					return err
-				}
-				return b.postOptions(ctx, trip, "No worries — here they are again.", trip.Options)
-			}
-		}
+		return b.say(ctx, trip.GroupID, "The group chose not to start a search. Ask what they would like to change in the current plan.", nil)
 	}
-	return nil
+	return b.handleChatTurn(ctx, trip, models.IncomingMessage{
+		GroupID: vote.GroupID, GroupName: trip.GroupName, SenderID: vote.VoterID,
+		SenderName: vote.VoterName, Text: text, Tagged: true, Timestamp: vote.Timestamp,
+	}, sentAt)
+}
+
+func pollPlanKey(trip *models.Trip) string {
+	data, _ := json.Marshal(map[string]any{
+		"options": trip.Options, "chosen": trip.ChosenOption(), "change_summary": pendingChangeSummary(trip),
+	})
+	return fmt.Sprintf("%x", sha256.Sum256(data))
+}
+
+func pendingChangeSummary(trip *models.Trip) string {
+	if trip.PendingChange == nil {
+		return ""
+	}
+	return trip.PendingChange.Summary
 }

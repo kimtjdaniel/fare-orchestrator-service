@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -37,8 +38,61 @@ func (s *MemoryStore) SaveMessage(ctx context.Context, msg *models.Message) (boo
 	}
 	cp := *msg
 	cp.ID = uuid.NewString()
+	cp.RecordedAt = models.Now()
 	s.messages = append(s.messages, cp)
+	*msg = cp
 	return true, nil
+}
+
+func (s *MemoryStore) GetSessionMessages(ctx context.Context, groupID, sessionID string) ([]models.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rows := []models.Message{}
+	if sessionID == "" {
+		return rows, nil
+	}
+	for _, msg := range s.messages {
+		if msg.GroupID == groupID && msg.SessionID == sessionID {
+			rows = append(rows, msg)
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].SentAt.Equal(rows[j].SentAt) {
+			return rows[i].RecordedAt.Before(rows[j].RecordedAt)
+		}
+		return rows[i].SentAt.Before(rows[j].SentAt)
+	})
+	return rows, nil
+}
+
+func (s *MemoryStore) AssignMessageSession(ctx context.Context, groupID, sessionID string, messageIDs []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make(map[string]bool, len(messageIDs))
+	for _, id := range messageIDs {
+		ids[id] = true
+	}
+	for i := range s.messages {
+		msg := &s.messages[i]
+		if msg.GroupID == groupID && ids[msg.ID] {
+			msg.SessionID = sessionID
+			msg.TripID = groupID
+		}
+	}
+	return nil
+}
+
+func (s *MemoryStore) BindUnassignedMessages(ctx context.Context, groupID, sessionID string, since *time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.messages {
+		msg := &s.messages[i]
+		if msg.GroupID == groupID && msg.SessionID == "" && (since == nil || !msg.SentAt.Before(*since)) {
+			msg.SessionID = sessionID
+			msg.TripID = groupID
+		}
+	}
+	return nil
 }
 
 func (s *MemoryStore) GetMessages(ctx context.Context, groupID string, since *time.Time, limit int, includeBot bool) ([]models.Message, error) {
@@ -73,6 +127,7 @@ func (s *MemoryStore) CreateTrip(ctx context.Context, groupID, groupName string)
 	now := models.Now()
 	trip := &models.Trip{
 		ID: groupID, GroupID: groupID, GroupName: groupName, State: models.Collecting,
+		SessionID: uuid.NewString(),
 		CreatedAt: now, UpdatedAt: now,
 		Participants: []models.Participant{}, Options: []models.Option{},
 		Flights: []models.Flight{}, Accommodations: []models.Accommodation{},

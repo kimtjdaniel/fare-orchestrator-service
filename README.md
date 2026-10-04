@@ -13,33 +13,52 @@ The Go backend owns group planning and broadcasts progress to the frontend.
 The existing WhatsApp `POST /webhook` and Telegram webhook continue to drive the
 workflow. A planning trigger creates a UUID session and emits `session.started`;
 the frontend shows a popup linking to `/dashboard/{groupId}/{sessionId}`. The
-backend still waits for the group's destination choice before starting searches.
+backend starts flight and hotel searches as soon as a complete single-destination
+plan is ready. When there are multiple alternatives, choosing one starts the
+search directly; there is no second finalize poll. An explicit request to wait or
+produce only a draft defers searching.
 Frontend connections and reconnects do not start searches.
 
-Gemini routes conversational messages using the active trip, recent chat, and any
-quoted message. Explicit separate-trip requests such as `@Fare let's also plan a
-Paris trip` or `@Fare create a new session` create a fresh UUID session, even while
-the current trip awaits choice or approval. Clear standalone commands such as
-`@Fare plan a 7-night Tokyo trip ...` start a new session directly, including
-repeated requests with identical dates and destination. Commands referring to
-the current trip or its itinerary still use conversational routing.
-Follow-ups such as `yes`, `1`, searches,
-budget changes, and date revisions keep the same session through completion and
-retries. Starting searches does not create another session.
+All incoming group messages are saved, including untagged conversation. Only an
+@mention or a direct reply to the bot invokes Gemini and can trigger a reply or
+planning action. Passive messages before the first mention are adopted into the
+first trip's history; subsequent mentions see the saved background discussion.
+Native votes on the bot's own polls remain explicit interactions.
 
-For ambiguous requests such as `What about Paris?`, Fare asks whether to change
-the current trip or start a separate one. The pending request is stored in the
-trip's optional `pending_trip_request` field (`text`, `sender_name`, `sent_at`,
-`question`), and survives restarts with Mongo. Reply `continue this trip` or
-`new trip` to apply the original request; a bare `yes` repeats the routing question
-instead of approving the old trip. If classification fails, Fare asks for
-clarification before changing the trip.
+Gemini makes one structured conversation decision from the latest message,
+quoted reply, active trip facts, recent turns, and persistent memory. The server
+validates the chosen action against the current state and available options.
+Ordinary text no longer takes keyword shortcuts for greetings, numbers, "yes",
+searches, itinerary edits, or new trips. Questions can be answered directly;
+planning actions feed their actual outcomes to a single reply writer. A long
+search sends a progress reply with its link before its final result. The search
+workers are launched before the progress reply is generated, so slow generation
+or failed delivery cannot prevent the work from starting. Ready-session link
+requests start pending searches; existing active/completed links never rerun them.
 
-Repeating a standalone trip request starts another session. Webhook retries
-with the same `message_id` remain deduplicated. The latest request becomes the
-group's active trip; earlier dashboard snapshots remain available in its latest
-20 sessions. Only the latest trip is active for chat replies. Starting a new trip
-does not approve or cancel any previous booking.
+New-session requests create a new UUID. Follow-ups, corrections, choices, and
+searches retain the existing session. An ambiguous request can be stored in
+`pending_trip_request` until the user resolves it; a bare yes does not choose
+between changing this trip and starting another one. Older sessions remain
+separate, and their messages cannot approve the current plan.
+
+Normal chat replies are generated from conversation and saved facts. Internal
+workflow notes and formatter output are evidence for the writer, not canned
+messages delivered to the user. Native poll labels/buttons remain deterministic
+controls. The only direct fixed text is an operational notice when a reply cannot
+be completed. There is no automatic mock response or fallback to a different
+Gemini model. The configured model's default reasoning behavior is retained.
+
+Native polls are bound to their message ID, session, kind, and plan identity.
+Votes for unrelated polls, older sessions, or changed plans do not trigger a
+search. Polls created before this binding was introduced must be reissued;
+existing intake polls with saved message IDs remain readable.
+
+Preferences retain participant attribution. Updated availability replaces the
+old dates instead of unioning rejected dates back in. A person's departure city
+is not automatically assigned to other travelers. Searches require valid dates
+and airports; missing dates never default to a weekend. Sharing a hotel map reads
+the saved stay and does not launch a search.
 
 Every WebSocket event has `version: 1`, `type`, `groupId`, and `revision`.
 The dashboard snapshot uses an empty `groupId`; subsequent events retain their
@@ -83,10 +102,54 @@ survive reconnects and restarts; with the memory store they survive only for the
 process lifetime. Browser frames remain ephemeral. The existing singleton trip
 schema and booking state machine are retained.
 
+## Session conversation storage
+
+The active trip's `session_id` is also the dashboard planning session ID. Every
+incoming text, dashboard chat message, bot reply, poll, and poll vote is stored
+as its own document in `messages` with `group_id`, `session_id`, sender details,
+full text, `sent_at`, and `recorded_at`. Quoted messages are retained. Mention
+bursts are still processed together, but their original messages and external
+IDs are saved separately so webhook retries remain deduplicated.
+
+Before each Gemini request, the orchestrator builds a bounded view of the session:
+persistent memory of older turns followed by recent original user/assistant turns,
+with sender names, timestamps, and quoted messages. `LLM_CONTEXT_BYTES` defaults to
+96,000 UTF-8 bytes (minimum supported value 64,000). It reserves space for the
+current task and system instructions; it is a conservative byte budget, not an
+exact tokenizer or the provider's advertised context limit.
+
+When the window fills, older turns are incrementally summarized in bounded
+chunks. Memory is saved under `conversation:{groupId}:{sessionId}` in
+`whatsapp_sessions`, alongside the existing complete message archive. A digest
+of the summarized prefix detects late-arriving or reassigned messages and causes
+memory to be rebuilt. New sessions have separate memory. With Mongo configured,
+this survives restarts; the memory store remains process-local.
+
+The summary preserves attributed preferences, corrections, decisions, rejected
+options and unresolved questions. Summaries are lossy; original messages are
+never deleted. Oversized requests or failed compaction return an error rather
+than silently discarding context or guessing. Current structured facts and actual
+search results remain authoritative. Gemini does not access Mongo directly.
+
+An explicit new trip gets a new UUID and the triggering messages are assigned
+to it, including a pending original request when a clarification starts the
+new trip. Follow-ups, replans, and retries retain the same session ID. Older
+session conversations stay in the message collection even when their dashboard
+snapshots fall outside the latest 20 sessions. The active dashboard chat still displays
+the current session's full original conversation.
+
+Existing trips adopt their saved dashboard session ID on first use. Previously
+unassigned messages from the existing `history_start` boundary are backfilled
+into that session. Mongo persists conversation history across restarts; the
+memory store retains it only while the process runs. Historical sessions created
+before this change cannot always be reconstructed from unassigned messages.
+
 ## Configuration
 
 Copy `.env.example` to `.env` and configure the existing Gemini, database, and
-messaging settings. Set `DASHBOARD_URL=http://localhost:3000` for bot-shared links.
+messaging settings. Live Gemini and travel services are enabled by default; mock
+modes require explicit opt-in. Restart the Go orchestrator after code or environment
+changes. Set `DASHBOARD_URL=http://localhost:3000` for bot-shared links.
 
 For real searches and live browser frames:
 
@@ -248,7 +311,8 @@ because this walkthrough uses console messaging; they are not returned by curl.
 
 The frontend should show a new planning session and a popup with **View live plan**.
 Open it to reach `http://localhost:3000/dashboard/test-group/<sessionId>`.
-Initially, Fare gathers preferences and then waits for a destination choice.
+Initially, Fare gathers preferences. A complete single-destination plan starts
+searching immediately; multiple alternatives wait for the destination choice.
 The Go terminal should print the proposed options. Gemini may suggest a Tokyo
 neighborhood such as Shimokitazawa, so the displayed name can vary.
 

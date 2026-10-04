@@ -277,13 +277,21 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 
 func (b *Brain) dashboardPayload(ctx context.Context, trip *models.Trip) (map[string]any, error) {
 	itin := models.ScheduleItinerary(trip, trip.Itinerary, false)
-	currentID := ""
+	currentID := trip.SessionID
 	if b.Dashboard != nil {
-		currentID, _ = b.Dashboard.CurrentID(ctx, trip.GroupID)
+		if id, _ := b.Dashboard.CurrentID(ctx, trip.GroupID); id != "" {
+			currentID = id
+		}
 	}
 	spend := formatting.ComputeSpend(trip)
 	advisor := asMapAny(itin["advisor"])
-	msgs, _ := b.Store.GetMessages(ctx, trip.GroupID, nil, 80, true)
+	msgs, err := b.sessionHistory(ctx, trip)
+	if err != nil {
+		return nil, err
+	}
+	if currentID == "" {
+		currentID = trip.SessionID
+	}
 	people := dashPeople(trip)
 	editable := models.ScheduleEditable(trip)
 	return map[string]any{

@@ -54,27 +54,28 @@ const (
 // CONTRACTS.md is flat (group_id, sender_id). Older robot builds sent nested
 // chat/sender objects; UnmarshalJSON accepts both.
 type IncomingMessage struct {
-	GroupID      string         `json:"group_id"`
-	GroupName    string         `json:"group_name"`
-	SenderID     string         `json:"sender_id"`
-	SenderName   string         `json:"sender_name"`
-	Participants []GroupMember  `json:"participants,omitempty"`
-	Text         string         `json:"text"`
-	Tagged       bool           `json:"tagged"`    // was the bot @mentioned?
-	Timestamp    int64          `json:"timestamp"` // unix seconds
-	MessageID    string         `json:"message_id,omitempty"`
-	AgentID      string         `json:"agent_id,omitempty"`
-	AgentIDs     []string       `json:"agent_ids,omitempty"`
-	Quoted       *QuotedMessage `json:"quoted,omitempty"`
-	CoAskers     []string       `json:"-"` // other people in a batched @mention burst
+	GroupID      string            `json:"group_id"`
+	GroupName    string            `json:"group_name"`
+	SenderID     string            `json:"sender_id"`
+	SenderName   string            `json:"sender_name"`
+	Participants []GroupMember     `json:"participants,omitempty"`
+	Text         string            `json:"text"`
+	Tagged       bool              `json:"tagged"`    // was the bot @mentioned?
+	Timestamp    int64             `json:"timestamp"` // unix seconds
+	MessageID    string            `json:"message_id,omitempty"`
+	AgentID      string            `json:"agent_id,omitempty"`
+	AgentIDs     []string          `json:"agent_ids,omitempty"`
+	Quoted       *QuotedMessage    `json:"quoted,omitempty"`
+	CoAskers     []string          `json:"-"` // other people in a batched @mention burst
+	Batch        []IncomingMessage `json:"-"` // original messages retained when processing a burst
 }
 
 // QuotedMessage is the WhatsApp message this inbound line is replying to.
 type QuotedMessage struct {
-	ID       string `json:"id"`
-	SenderID string `json:"sender_id"`
-	Text     string `json:"text"`
-	FromMe   bool   `json:"from_me"`
+	ID       string `json:"id" bson:"id"`
+	SenderID string `json:"sender_id" bson:"sender_id"`
+	Text     string `json:"text" bson:"text"`
+	FromMe   bool   `json:"from_me" bson:"from_me"`
 }
 
 // GroupMember is one WhatsApp group participant as reported by the robot.
@@ -258,16 +259,19 @@ func (m *IncomingMessage) UnmarshalJSON(data []byte) error {
 // ---------- stored records ----------
 
 type Message struct {
-	ID         string    `json:"id,omitempty" bson:"_id,omitempty"`
-	GroupID    string    `json:"group_id" bson:"group_id"`
-	TripID     string    `json:"trip_id,omitempty" bson:"trip_id,omitempty"`
-	ExternalID string    `json:"external_id,omitempty" bson:"external_id,omitempty"`
-	SenderID   string    `json:"sender_id" bson:"sender_id"`
-	SenderName string    `json:"sender_name" bson:"sender_name"`
-	Text       string    `json:"text" bson:"text"`
-	Tagged     bool      `json:"tagged" bson:"tagged"`
-	IsBot      bool      `json:"is_bot" bson:"is_bot"`
-	SentAt     time.Time `json:"sent_at" bson:"sent_at"`
+	ID         string         `json:"id,omitempty" bson:"_id,omitempty"`
+	GroupID    string         `json:"group_id" bson:"group_id"`
+	TripID     string         `json:"trip_id,omitempty" bson:"trip_id,omitempty"`
+	SessionID  string         `json:"session_id,omitempty" bson:"session_id,omitempty"`
+	ExternalID string         `json:"external_id,omitempty" bson:"external_id,omitempty"`
+	SenderID   string         `json:"sender_id" bson:"sender_id"`
+	SenderName string         `json:"sender_name" bson:"sender_name"`
+	Text       string         `json:"text" bson:"text"`
+	Tagged     bool           `json:"tagged" bson:"tagged"`
+	IsBot      bool           `json:"is_bot" bson:"is_bot"`
+	SentAt     time.Time      `json:"sent_at" bson:"sent_at"`
+	RecordedAt time.Time      `json:"recorded_at" bson:"recorded_at"`
+	Quoted     *QuotedMessage `json:"quoted,omitempty" bson:"quoted,omitempty"`
 }
 
 func ParseDate(s string) (time.Time, error) {
@@ -402,6 +406,7 @@ type Trip struct {
 	GroupID   string    `json:"group_id" bson:"group_id"`
 	GroupName string    `json:"group_name" bson:"group_name"`
 	State     TripState `json:"state" bson:"state"`
+	SessionID string    `json:"session_id,omitempty" bson:"session_id,omitempty"`
 
 	Participants         []Participant `json:"participants" bson:"participants"`
 	Options              []Option      `json:"options" bson:"options"`
@@ -464,6 +469,7 @@ type PendingTripRequest struct {
 	SenderName string    `json:"sender_name" bson:"sender_name"`
 	SentAt     time.Time `json:"sent_at" bson:"sent_at"`
 	Question   string    `json:"question" bson:"question"`
+	MessageIDs []string  `json:"message_ids,omitempty" bson:"message_ids,omitempty"`
 }
 
 // PendingChange is a proposed update to already-set trip details. It only applies

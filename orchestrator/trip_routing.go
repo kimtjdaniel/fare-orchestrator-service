@@ -55,10 +55,6 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		return trip, m, true, b.startNewTrip(ctx, trip, m, sentAt)
 	}
 
-	history, err := b.Store.GetMessages(ctx, m.GroupID, trip.HistoryStart, 20, true)
-	if err != nil {
-		return trip, m, true, err
-	}
 	facts, err := json.Marshal(map[string]any{
 		"state": trip.State, "origin": trip.Origin, "destination": trip.Destination,
 		"start_date": trip.EmbarkingDate, "end_date": trip.ReturningDate,
@@ -69,9 +65,9 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 	if err != nil {
 		return trip, m, true, err
 	}
-	user := fmt.Sprintf("Current trip: %s\nRecent chat (background only):\n%s\nQuoted message: %s\nLatest WhatsApp message from %s:\n%s",
-		facts, compactChat(history, 20), quotedText(m), m.SenderName, m.Text)
-	out, classifyErr := b.LLM.Structured(ctx, prompts.RouteTripSystem,
+	user := fmt.Sprintf("Current trip: %s\nQuoted message: %s\nLatest WhatsApp message from %s:\n%s",
+		facts, quotedText(m), m.SenderName, m.Text)
+	out, classifyErr := b.structured(ctx, trip, prompts.RouteTripSystem,
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.RouteTrip))
 	// If classification fails or returns an unknown action, ask instead of resetting
 	// a trip or passing a potential new request into the existing booking flow.
@@ -86,10 +82,11 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		if strings.TrimSpace(question) == "" {
 			question = tripRoutingQuestion
 		}
-		request := &models.PendingTripRequest{Text: m.Text, SenderName: m.SenderName, SentAt: sentAt, Question: question}
+		request := &models.PendingTripRequest{Text: m.Text, SenderName: m.SenderName, SentAt: sentAt, Question: question, MessageIDs: incomingMessageIDs(ctx)}
 		if pending != nil {
 			copy := *pending
 			copy.Question = question
+			copy.MessageIDs = append(append([]string(nil), pending.MessageIDs...), incomingMessageIDs(ctx)...)
 			request = &copy
 		}
 		trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"pending_trip_request": request})
@@ -99,6 +96,8 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		return trip, m, true, b.say(ctx, m.GroupID, question, nil)
 	}
 	if pending != nil && usePending {
+		ids := append(append([]string(nil), pending.MessageIDs...), incomingMessageIDs(ctx)...)
+		ctx = context.WithValue(ctx, incomingMessageIDsKey{}, ids)
 		m.Text = fmt.Sprintf("Original request from %s: %s\nClarification from %s: %s", pending.SenderName, pending.Text, m.SenderName, m.Text)
 		m.Tagged = true
 		sentAt = pending.SentAt

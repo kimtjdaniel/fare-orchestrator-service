@@ -9,10 +9,10 @@ import (
 
 func mergeParticipants(existing, extracted []models.Participant) []models.Participant {
 	if len(existing) == 0 {
-		return applySharedOrigin(extracted)
+		return extracted
 	}
 	if len(extracted) == 0 {
-		return applySharedOrigin(existing)
+		return existing
 	}
 	out := make([]models.Participant, 0, len(existing)+len(extracted))
 	used := map[string]bool{}
@@ -31,7 +31,7 @@ func mergeParticipants(existing, extracted []models.Participant) []models.Partic
 		}
 		out = append(out, old)
 	}
-	return applySharedOrigin(out)
+	return out
 }
 
 func overlayParticipant(base, neu models.Participant) models.Participant {
@@ -77,10 +77,12 @@ func overlayParticipant(base, neu models.Participant) models.Participant {
 	if neu.GeneralPreferences.Culinary != "" {
 		base.GeneralPreferences.Culinary = neu.GeneralPreferences.Culinary
 	}
-	base.GeneralPreferences.Availability = unionDates(base.GeneralPreferences.Availability, neu.GeneralPreferences.Availability)
-	if neu.FlightPreferences.IsDirect {
-		base.FlightPreferences.IsDirect = true
+	// Extraction returns the resolved availability, including corrections. A union
+	// would bring dates back after someone explicitly said they cannot travel.
+	if neu.GeneralPreferences.Availability != nil {
+		base.GeneralPreferences.Availability = append([]string{}, neu.GeneralPreferences.Availability...)
 	}
+	base.FlightPreferences.IsDirect = neu.FlightPreferences.IsDirect
 	if neu.FlightPreferences.Class != "" {
 		base.FlightPreferences.Class = neu.FlightPreferences.Class
 	}
@@ -164,7 +166,13 @@ func formatKnownPrefs(people []models.Participant) string {
 	if len(people) == 0 {
 		return ""
 	}
-	b, err := json.MarshalIndent(people, "", "  ")
+	preferences := append([]models.Participant(nil), people...)
+	for i := range preferences {
+		preferences[i].LegalName = ""
+		preferences[i].DateOfBirth = ""
+		preferences[i].PassportNumber = ""
+	}
+	b, err := json.MarshalIndent(preferences, "", "  ")
 	if err != nil {
 		return ""
 	}

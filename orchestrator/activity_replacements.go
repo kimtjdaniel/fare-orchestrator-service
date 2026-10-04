@@ -89,7 +89,7 @@ func (b *Brain) proposeActivityReplacement(ctx context.Context, trip *models.Tri
 	if err != nil {
 		return nil, "", err
 	}
-	out, err := b.LLM.Structured(ctx, prompts.ActivityReplacementSystem, []llm.Message{{Role: "user", Content: string(input)}}, toSchema(prompts.ActivityReplacement))
+	out, err := b.structured(ctx, trip, prompts.ActivityReplacementSystem, []llm.Message{{Role: "user", Content: string(input)}}, toSchema(prompts.ActivityReplacement))
 	if err != nil {
 		return nil, "", &DashboardError{Status: 400, Msg: "I couldn’t suggest a replacement. Try again with the day, activity and what you want instead."}
 	}
@@ -139,15 +139,11 @@ func (b *Brain) handleActivityReplacementReply(ctx context.Context, trip *models
 	if strings.HasPrefix(quoted, "Suggested replacement for ") && quoted != strAny(proposal["message"]) {
 		return true, b.say(ctx, trip.GroupID, "That was an older suggestion. Do you want to use the current suggestion, keep the original, or try another option?", nil)
 	}
-	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 8, true)
+	contextData, err := json.Marshal(map[string]any{"suggestion": proposal, "days": asMapAny(itinerary["advisor"])["days"], "quoted_message": quoted, "latest_reply": text})
 	if err != nil {
 		return true, err
 	}
-	contextData, err := json.Marshal(map[string]any{"suggestion": proposal, "days": asMapAny(itinerary["advisor"])["days"], "quoted_message": quoted, "recent_chat": compactChat(history, 8), "latest_reply": text})
-	if err != nil {
-		return true, err
-	}
-	out, err := b.LLM.Structured(ctx, prompts.ActivityReplacementReplySystem, []llm.Message{{Role: "user", Content: string(contextData)}}, toSchema(prompts.ActivityReplacementReply))
+	out, err := b.structured(ctx, trip, prompts.ActivityReplacementReplySystem, []llm.Message{{Role: "user", Content: string(contextData)}}, toSchema(prompts.ActivityReplacementReply))
 	if err != nil {
 		return true, b.say(ctx, trip.GroupID, "Did you want to use the suggested activity, keep the original, or try another option?", nil)
 	}

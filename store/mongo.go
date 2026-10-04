@@ -45,6 +45,7 @@ func (s *MongoStore) Connect(ctx context.Context) error {
 	// Idempotent index creation.
 	_, err = s.msgs.Indexes().CreateMany(ctx, []mongo.IndexModel{
 		{Keys: bson.D{{Key: "group_id", Value: 1}, {Key: "sent_at", Value: 1}}},
+		{Keys: bson.D{{Key: "group_id", Value: 1}, {Key: "session_id", Value: 1}, {Key: "sent_at", Value: 1}, {Key: "recorded_at", Value: 1}, {Key: "_id", Value: 1}}},
 		{
 			Keys: bson.D{{Key: "group_id", Value: 1}, {Key: "external_id", Value: 1}},
 			Options: options.Index().SetUnique(true).SetPartialFilterExpression(
@@ -70,6 +71,7 @@ func (s *MongoStore) Close(ctx context.Context) error {
 func (s *MongoStore) SaveMessage(ctx context.Context, msg *models.Message) (bool, error) {
 	cp := *msg
 	cp.ID = uuid.NewString()
+	cp.RecordedAt = models.Now()
 	_, err := s.msgs.InsertOne(ctx, cp)
 	if mongo.IsDuplicateKeyError(err) {
 		return false, nil
@@ -77,7 +79,44 @@ func (s *MongoStore) SaveMessage(ctx context.Context, msg *models.Message) (bool
 	if err != nil {
 		return false, err
 	}
+	*msg = cp
 	return true, nil
+}
+
+func (s *MongoStore) GetSessionMessages(ctx context.Context, groupID, sessionID string) ([]models.Message, error) {
+	rows := []models.Message{}
+	if sessionID == "" {
+		return rows, nil
+	}
+	filter := bson.D{{Key: "group_id", Value: groupID}, {Key: "session_id", Value: sessionID}}
+	opts := options.Find().SetSort(bson.D{{Key: "sent_at", Value: 1}, {Key: "recorded_at", Value: 1}, {Key: "_id", Value: 1}})
+	cur, err := s.msgs.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (s *MongoStore) AssignMessageSession(ctx context.Context, groupID, sessionID string, messageIDs []string) error {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	filter := bson.D{{Key: "group_id", Value: groupID}, {Key: "_id", Value: bson.D{{Key: "$in", Value: messageIDs}}}}
+	_, err := s.msgs.UpdateMany(ctx, filter, bson.D{{Key: "$set", Value: bson.D{{Key: "session_id", Value: sessionID}, {Key: "trip_id", Value: groupID}}}})
+	return err
+}
+
+func (s *MongoStore) BindUnassignedMessages(ctx context.Context, groupID, sessionID string, since *time.Time) error {
+	filter := bson.D{{Key: "group_id", Value: groupID}, {Key: "session_id", Value: bson.D{{Key: "$in", Value: bson.A{nil, ""}}}}}
+	if since != nil {
+		filter = append(filter, bson.E{Key: "sent_at", Value: bson.D{{Key: "$gte", Value: *since}}})
+	}
+	_, err := s.msgs.UpdateMany(ctx, filter, bson.D{{Key: "$set", Value: bson.D{{Key: "session_id", Value: sessionID}, {Key: "trip_id", Value: groupID}}}})
+	return err
 }
 
 func (s *MongoStore) GetMessages(ctx context.Context, groupID string, since *time.Time, limit int, includeBot bool) ([]models.Message, error) {
@@ -116,6 +155,7 @@ func (s *MongoStore) CreateTrip(ctx context.Context, groupID, groupName string) 
 	now := models.Now()
 	trip := &models.Trip{
 		ID: groupID, GroupID: groupID, GroupName: groupName, State: models.Collecting,
+		SessionID: uuid.NewString(),
 		CreatedAt: now, UpdatedAt: now,
 		Participants: []models.Participant{}, Options: []models.Option{},
 		Flights: []models.Flight{}, Accommodations: []models.Accommodation{},

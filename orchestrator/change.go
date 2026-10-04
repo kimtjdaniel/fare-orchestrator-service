@@ -345,8 +345,12 @@ func (b *Brain) applyPendingChange(ctx context.Context, trip *models.Trip, vote 
 
 func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	oldDest := trip.Destination
-	cut := b.replanCutover(ctx, trip.GroupID, m)
-	recent, _ := b.Store.GetMessages(ctx, trip.GroupID, &cut, 50, false)
+	history, err := b.sessionHistory(ctx, trip)
+	if err != nil {
+		return err
+	}
+	cut := b.replanCutover(historySince(history, trip.HistoryStart), m)
+	recent := historySince(history, &cut)
 	h := harvestFacts(recent, b.today())
 	h = mergeHarvest(h, harvestText(m.Text, b.today()))
 
@@ -377,7 +381,6 @@ func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.I
 		clear["embarking_date"] = h.Dates[0]
 		clear["returning_date"] = h.Dates[len(h.Dates)-1]
 	}
-	var err error
 	switch trip.State {
 	case models.Booked, models.Cancelled:
 		trip, err = store.SetState(ctx, b.Store, trip.ID, models.Collecting, clear)
@@ -407,19 +410,15 @@ func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.I
 	return b.plan(ctx, trip, feedback, m)
 }
 
-func (b *Brain) replanCutover(ctx context.Context, groupID string, m models.IncomingMessage) time.Time {
+func (b *Brain) replanCutover(messages []models.Message, m models.IncomingMessage) time.Time {
 	fallback := models.Now().Add(-2 * time.Second)
 	if m.Timestamp != 0 {
 		fallback = time.Unix(m.Timestamp, 0).UTC().Add(-2 * time.Second)
 	}
-	msgs, err := b.Store.GetMessages(ctx, groupID, nil, 40, false)
-	if err != nil {
-		return fallback
-	}
 	var first time.Time
 	found := false
-	for _, msg := range msgs {
-		if looksLikeReplan(msg.Text) || looksLikeCancelBooking(msg.Text) {
+	for _, msg := range messages {
+		if !msg.IsBot && (looksLikeReplan(msg.Text) || looksLikeCancelBooking(msg.Text)) {
 			if !found || msg.SentAt.Before(first) {
 				first = msg.SentAt
 				found = true

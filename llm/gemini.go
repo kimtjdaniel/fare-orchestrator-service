@@ -72,27 +72,16 @@ func (g *GeminiLLM) keys() []string {
 }
 
 func (g *GeminiLLM) modelsToTry() []string {
-	seen := map[string]bool{}
-	var out []string
-	add := func(m string) {
-		m = strings.TrimSpace(m)
-		if m == "" || seen[m] {
-			return
-		}
-		seen[m] = true
-		out = append(out, m)
-	}
-	add(g.Model)
-	add("gemini-3.1-flash-lite")
-	add("gemini-2.5-flash")
-	add("gemini-2.0-flash")
-	return out
+	// A provider failure must not silently change the model's behavior.
+	return []string{g.Model}
 }
 
 type geminiPart struct {
-	Text         string          `json:"text,omitempty"`
-	FunctionCall *geminiFuncCall `json:"functionCall,omitempty"`
-	FunctionResp *geminiFuncResp `json:"functionResponse,omitempty"`
+	Text             string          `json:"text,omitempty"`
+	Thought          bool            `json:"thought,omitempty"`
+	ThoughtSignature string          `json:"thoughtSignature,omitempty"`
+	FunctionCall     *geminiFuncCall `json:"functionCall,omitempty"`
+	FunctionResp     *geminiFuncResp `json:"functionResponse,omitempty"`
 }
 
 type geminiFuncCall struct {
@@ -140,7 +129,7 @@ type geminiError struct {
 
 // generate posts a generateContent request, caching on the exact request body.
 func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]any) (*geminiResponse, error) {
-	applyFastGen(body)
+	applyGenerationDefaults(body)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -148,16 +137,15 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 
 	var cachePath string
 	if g.CacheDir != "" {
-		sum := sha256.Sum256(payload)
+		sum := sha256.Sum256(append([]byte(g.Model+"\n"), payload...))
 		key := hex.EncodeToString(sum[:])[:32]
 		cachePath = filepath.Join(g.CacheDir, key+".json")
 		if cached, err := os.ReadFile(cachePath); err == nil {
 			slog.Info("llm cache hit", "kind", kind, "key", key)
 			var resp geminiResponse
-			if err := json.Unmarshal(cached, &resp); err != nil {
-				return nil, err
+			if json.Unmarshal(cached, &resp) == nil && len(resp.Candidates) > 0 && resp.Candidates[0].FinishReason == "STOP" {
+				return &resp, nil
 			}
-			return &resp, nil
 		}
 	}
 
@@ -176,6 +164,9 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 	}
 	for _, model := range g.modelsToTry() {
 		for attempt := 1; attempt <= 4; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			busy := false
 			for i := 0; i < len(keys); i++ {
 				apiKey := keys[(start+i)%len(keys)]
@@ -221,8 +212,8 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 				}
 				slog.Info("llm call", "kind", kind, "model", model, "elapsed", time.Since(t0),
 					"in", resp.UsageMetadata.PromptTokenCount, "out", resp.UsageMetadata.CandidatesTokenCount)
-				if cachePath != "" {
-					_ = os.WriteFile(cachePath, raw, 0o644)
+				if cachePath != "" && len(resp.Candidates) > 0 && resp.Candidates[0].FinishReason == "STOP" {
+					_ = os.WriteFile(cachePath, raw, 0o600)
 				}
 				return &resp, nil
 			}
@@ -297,7 +288,7 @@ func (g *GeminiLLM) Agent(ctx context.Context, system string, messages []Message
 			return "", err
 		}
 		if len(resp.Candidates) == 0 {
-			return "Sorry, I got stuck working that out. Can you rephrase?", nil
+			return "", fmt.Errorf("Gemini did not produce a usable answer")
 		}
 		candidate := resp.Candidates[0].Content
 
@@ -308,7 +299,11 @@ func (g *GeminiLLM) Agent(ctx context.Context, system string, messages []Message
 			}
 		}
 		if len(calls) == 0 {
-			return textOfParts(candidate.Parts), nil
+			text := strings.TrimSpace(textOfParts(candidate.Parts))
+			if text == "" || (resp.Candidates[0].FinishReason != "" && resp.Candidates[0].FinishReason != "STOP") {
+				return "", fmt.Errorf("Gemini answer incomplete (finishReason=%s)", resp.Candidates[0].FinishReason)
+			}
+			return text, nil
 		}
 
 		contents = append(contents, geminiContent{Role: "model", Parts: candidate.Parts})
@@ -344,7 +339,7 @@ func (g *GeminiLLM) Agent(ctx context.Context, system string, messages []Message
 		}
 		contents = append(contents, geminiContent{Role: "user", Parts: resultParts})
 	}
-	return "Sorry, I got stuck working that out. Can you rephrase?", nil
+	return "", fmt.Errorf("Gemini did not produce a usable answer")
 }
 
 func toGeminiContents(messages []Message) []geminiContent {
@@ -354,8 +349,19 @@ func toGeminiContents(messages []Message) []geminiContent {
 		if role == "assistant" {
 			role = "model"
 		}
-		text, _ := m.Content.(string)
-		out = append(out, geminiContent{Role: role, Parts: []geminiPart{{Text: text}}})
+		text, ok := m.Content.(string)
+		if !ok {
+			raw, _ := json.Marshal(m.Content)
+			text = string(raw)
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		if len(out) > 0 && out[len(out)-1].Role == role {
+			out[len(out)-1].Parts = append(out[len(out)-1].Parts, geminiPart{Text: text})
+		} else {
+			out = append(out, geminiContent{Role: role, Parts: []geminiPart{{Text: text}}})
+		}
 	}
 	return out
 }
@@ -370,7 +376,9 @@ func textOf(resp *geminiResponse) string {
 func textOfParts(parts []geminiPart) string {
 	var out string
 	for _, p := range parts {
-		out += p.Text
+		if !p.Thought {
+			out += p.Text
+		}
 	}
 	return out
 }
@@ -420,7 +428,7 @@ func toGeminiSchema(schema map[string]any) map[string]any {
 	return out
 }
 
-func applyFastGen(body map[string]any) {
+func applyGenerationDefaults(body map[string]any) {
 	cfg, _ := body["generationConfig"].(map[string]any)
 	if cfg == nil {
 		cfg = map[string]any{}
@@ -428,7 +436,6 @@ func applyFastGen(body map[string]any) {
 	if _, ok := cfg["maxOutputTokens"]; !ok {
 		cfg["maxOutputTokens"] = 4096
 	}
-	cfg["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
 	body["generationConfig"] = cfg
 }
 

@@ -292,13 +292,30 @@ func (m *Manager) beginLocked(ctx context.Context, t *models.Trip, fresh bool) (
 	if err != nil {
 		return "", err
 	}
-	if !fresh && len(g.Sessions) > 0 {
+	if t.SessionID == "" || (fresh && len(g.Sessions) > 0 && t.SessionID == g.Sessions[0].Session.ID) {
+		id := uuid.NewString()
+		if !fresh && len(g.Sessions) > 0 {
+			id = g.Sessions[0].Session.ID
+		}
+		if err := m.store.BindUnassignedMessages(ctx, t.GroupID, id, t.HistoryStart); err != nil {
+			return "", err
+		}
+		updated, err := m.store.UpdateTrip(ctx, t.ID, map[string]any{"session_id": id})
+		if err != nil {
+			return "", err
+		}
+		if updated == nil {
+			return "", fmt.Errorf("trip %s unavailable", t.ID)
+		}
+		*t = *updated
+	}
+	if !fresh && len(g.Sessions) > 0 && g.Sessions[0].Session.ID == t.SessionID {
 		s := g.Sessions[0]
 		// Completion and retries belong to this trip. Only BeginNew starts another.
 		syncSession(&s.Session, t)
 		return s.Session.ID, nil
 	}
-	s := &Snapshot{Session: Session{ID: uuid.NewString(), GroupID: t.GroupID, Destination: "Planning your trip", Status: "created", CreatedAt: models.Now()}, Flight: "pending", Hotel: "pending", Planning: "pending", PlanningTasks: map[string]string{"flight-prices": "pending", "hotel-location": "pending", "group-budget": "pending", "daily-schedule": "pending"}, FlightMessage: "Waiting for your group’s destination choice", HotelMessage: "Waiting for your group’s destination choice", Flights: []map[string]any{}, Hotels: []map[string]any{}, Activity: []Activity{}, Previews: map[string]map[string]map[string]any{"flight": {}, "hotel": {}}}
+	s := &Snapshot{Session: Session{ID: t.SessionID, GroupID: t.GroupID, Destination: "Planning your trip", Status: "created", CreatedAt: models.Now()}, Flight: "pending", Hotel: "pending", Planning: "pending", PlanningTasks: map[string]string{"flight-prices": "pending", "hotel-location": "pending", "group-budget": "pending", "daily-schedule": "pending"}, FlightMessage: "Waiting for your group’s destination choice", HotelMessage: "Waiting for your group’s destination choice", Flights: []map[string]any{}, Hotels: []map[string]any{}, Activity: []Activity{}, Previews: map[string]map[string]map[string]any{"flight": {}, "hotel": {}}}
 	syncSession(&s.Session, t)
 	for _, previous := range g.Sessions {
 		if previous.Plan != nil {

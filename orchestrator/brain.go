@@ -1,14 +1,9 @@
 // Package orchestrator is the brain. Every incoming group message lands in Brain.Handle().
 //
-// Flow (code moves the state, Gemini only reads/writes text). Each WhatsApp group has a SINGLETON
-// trip document (no history of past trips) that gets reset and reused for every new cycle:
-//
-//	COLLECTING --@mention--> extract prefs + propose options --> AWAITING_CHOICE
-//	AWAITING_CHOICE --"2"--> lock destination, send full plan summary, ask to finalize
-//	                --yes--> search flights + hotel (live dashboard link) --> AWAITING_APPROVAL
-//	AWAITING_APPROVAL --✅--> book flights + hotel (Skyvern) --> BOOKED
-//	                  --❌--> back to AWAITING_CHOICE
-//	ANY STATE --explicit new trip request--> fresh dashboard session, reset doc --> COLLECTING
+// Each turn is interpreted using its session memory and current trip facts.
+// Gemini proposes a typed action; code validates and executes it. Workflow
+// outcomes are composed into one response, with a progress update for searches.
+// The group owns one active trip; explicit new trips start separate sessions.
 package orchestrator
 
 import (
@@ -376,6 +371,9 @@ func designatedPayer(people []models.Participant) string {
 // extracted, or the reverse), so try exact, then substring, then first-name before giving up.
 func matchName(name string, people []models.Participant) *models.Participant {
 	needle := strings.ToLower(strings.TrimSpace(name))
+	if needle == "" {
+		return nil
+	}
 	for i := range people {
 		if strings.ToLower(strings.TrimSpace(people[i].WhatsAppName)) == needle {
 			return &people[i]
@@ -383,7 +381,7 @@ func matchName(name string, people []models.Participant) *models.Participant {
 	}
 	for i := range people {
 		hay := strings.ToLower(strings.TrimSpace(people[i].WhatsAppName))
-		if strings.Contains(needle, hay) || strings.Contains(hay, needle) {
+		if hay != "" && (strings.Contains(needle, hay) || strings.Contains(hay, needle)) {
 			return &people[i]
 		}
 	}
@@ -426,20 +424,9 @@ func (b *Brain) Handle(ctx context.Context, m models.IncomingMessage) {
 }
 
 func shouldBatchMention(m models.IncomingMessage) bool {
-	if !m.Tagged || strings.TrimSpace(m.Text) == "" {
-		return false
-	}
-	// Each explicit trip request gets its own session, even in a burst of group messages.
-	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) || activityReplacementRe.MatchString(m.Text) || strings.Contains(strings.ToLower(m.Text), " replacement ") {
-		return false
-	}
-	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
-		return false
-	}
-	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeBookAsk(m.Text) {
-		return false
-	}
-	return true
+	// Keep authored messages separate; serialize them under the group lock.
+	// Combining different speakers' commands loses attribution and follow-up order.
+	return false
 }
 
 func (b *Brain) enqueueTagged(ctx context.Context, m models.IncomingMessage) {
@@ -494,6 +481,7 @@ func mergeTagged(msgs []models.IncomingMessage) models.IncomingMessage {
 	out.Text = strings.Join(lines, "\n")
 	out.Tagged = true
 	out.CoAskers = names
+	out.Batch = msgs
 	return out
 }
 
@@ -501,28 +489,18 @@ func (b *Brain) handleLocked(ctx context.Context, m models.IncomingMessage) {
 	lock := b.lockFor(m.GroupID)
 	lock.Lock()
 	defer lock.Unlock()
-	ctx = messaging.WithReplyTo(ctx, m.MessageID)
-
-	if err := b.handle(ctx, m); err != nil {
-		if b.Dashboard != nil {
-			_ = b.Dashboard.Emit(ctx, m.GroupID, "session.failed", map[string]any{"message": "Trip planning could not finish. Please try again in the group chat."})
-		}
-		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
-		if sayErr := b.say(ctx, m.GroupID, geminiFailTalk(err), nil); sayErr != nil {
-			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
-		}
-	}
-}
-
-func geminiFailTalk(err error) string {
+	ctx = withReplyTurn(messaging.WithReplyTo(ctx, m.MessageID))
+	err := b.handle(ctx, m)
 	if err == nil {
-		return "Something broke on my end. Try that again."
+		err = b.flushReply(ctx, m.GroupID)
 	}
-	s := err.Error()
-	if strings.Contains(s, "503") || strings.Contains(s, "429") || strings.Contains(strings.ToLower(s), "high demand") {
-		return "Google's model is slammed right now. Ping me again in a minute and I'll pick it up."
+	if err != nil {
+		turn, _ := ctx.Value(replyTurnKey{}).(*replyTurn)
+		addressed := m.Tagged || (m.Quoted != nil && m.Quoted.FromMe)
+		if addressed || (turn != nil && (len(turn.Notes) > 0 || turn.Generated != "")) {
+			_ = b.replyUnavailable(ctx, m.GroupID)
+		}
 	}
-	return "Something broke on my end. Try that again."
 }
 
 func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
@@ -535,6 +513,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	trip, err := b.Store.GetTrip(ctx, m.GroupID)
 	if err != nil {
 		return err
+	}
+	if trip != nil {
+		if err := b.ensureSession(ctx, trip); err != nil {
+			return err
+		}
 	}
 	st := ""
 	if trip != nil {
@@ -549,15 +532,41 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	if trip != nil {
 		tripID = trip.ID
 	}
-	isNew, err := b.Store.SaveMessage(ctx, &models.Message{
-		GroupID: m.GroupID, TripID: tripID, ExternalID: m.MessageID, SenderID: m.SenderID,
-		SenderName: m.SenderName, Text: m.Text, Tagged: m.Tagged, SentAt: sentAt,
-	})
-	if err != nil {
-		return err
+	originals := m.Batch
+	if len(originals) == 0 {
+		originals = []models.IncomingMessage{m}
 	}
-	if !isNew {
+	var savedIDs []string
+	var fresh []models.IncomingMessage
+	for _, original := range originals {
+		at := models.Now()
+		if original.Timestamp != 0 {
+			at = time.Unix(original.Timestamp, 0).UTC()
+		}
+		msg := &models.Message{
+			GroupID: m.GroupID, TripID: tripID, ExternalID: original.MessageID, SenderID: original.SenderID,
+			SenderName: original.SenderName, Text: original.Text, Tagged: original.Tagged, SentAt: at, Quoted: original.Quoted,
+		}
+		if trip != nil {
+			msg.SessionID = trip.SessionID
+		}
+		isNew, err := b.Store.SaveMessage(ctx, msg)
+		if err != nil {
+			return err
+		}
+		if isNew {
+			savedIDs = append(savedIDs, msg.ID)
+			fresh = append(fresh, original)
+		}
+	}
+	if len(fresh) == 0 {
 		return nil // duplicate delivery (webhook retry)
+	}
+	m = mergeTagged(fresh)
+	ctx = context.WithValue(messaging.WithReplyTo(ctx, m.MessageID), incomingMessageIDsKey{}, savedIDs)
+	sentAt = models.Now()
+	if m.Timestamp != 0 {
+		sentAt = time.Unix(m.Timestamp, 0).UTC()
 	}
 
 	_, _ = b.Store.SaveWhatsAppSession(ctx, "group:"+m.GroupID, map[string]any{
@@ -566,40 +575,13 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"agent_id": m.AgentID,
 	})
 
-	if trip != nil {
-		text := strings.TrimSpace(b.mentionRe.ReplaceAllString(m.Text, ""))
-		if activityReplacementReplyRe.MatchString(text) {
-			return b.activityReplacementMessage(ctx, trip, m, text)
+	// Passive group chat is retained above, but cannot invoke Gemini, send a
+	// reply, create a trip, or trigger any planning/search action.
+	if !m.Tagged && (m.Quoted == nil || !m.Quoted.FromMe) {
+		if trip != nil {
+			b.rememberRoster(ctx, trip, m)
 		}
-		if handled, err := b.handleActivityReplacementReply(ctx, trip, m, text); err != nil || handled {
-			return err
-		}
-		if looksLikeActivityReplacement(trip, text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
-			return b.activityReplacementMessage(ctx, trip, m, text)
-		}
-	}
-	if trip == nil && m.Tagged && looksLikeNewTripRequest(m.Text) {
-		return b.startNewTrip(ctx, nil, m, sentAt)
-	}
-	if trip != nil {
-		var handled bool
-		trip, m, handled, err = b.routeTripMessage(ctx, trip, m, sentAt)
-		if err != nil || handled {
-			return err
-		}
-	}
-
-	if trip != nil {
-		if b.Dashboard != nil && shouldBatchMention(m) && (trip.State == models.Collecting || trip.State == models.AwaitingChoice) {
-			if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
-				return err
-			}
-		}
-		b.rememberRoster(ctx, trip, m)
-		trip, err = b.capturePayer(ctx, trip, m)
-		if err != nil {
-			return err
-		}
+		return nil
 	}
 
 	if trip == nil {
@@ -607,125 +589,18 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		if err != nil {
 			return err
 		}
-		// Create the dashboard session before introductory replies or planning
-		// can fail. The frontend should see the request before searches begin.
-		if b.Dashboard != nil && shouldBatchMention(m) {
-			if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
-				return err
-			}
-		}
-		b.rememberRoster(ctx, trip, m)
-		trip, err = b.capturePayer(ctx, trip, m)
-		if err != nil {
+		if err := b.ensureSession(ctx, trip); err != nil {
 			return err
 		}
-		stop, trip, err := b.maybeIntroduce(ctx, trip, m)
-		if err != nil || stop {
+		if err := b.attachIncomingMessages(ctx, trip); err != nil {
 			return err
 		}
-		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
-			return nil
-		}
-		// No book-ask shortcut here: a brand-new trip has no chosen option yet, so "let's book" /
-		// "sounds good" said during intake can only be answering the current intake question —
-		// runIntakeTurn's own extraction.Approval handles an explicit ✅ at the readiness gate.
-		return b.runIntakeTurn(ctx, trip, m)
-	}
-
-	if looksLikeTripActivityEdit(trip, m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
-		return b.editActivityMessage(ctx, trip, m)
-	}
-	if trip.State == models.Booked {
-		if looksLikeDirectQuestion(m.Text) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) {
-			return b.answerQuestion(ctx, trip, m)
-		}
-		if !m.Tagged {
-			return nil
-		}
-		stop, trip, err := b.maybeIntroduce(ctx, trip, m)
-		if err != nil || stop {
-			return err
-		}
-		if looksLikeCancelBooking(m.Text) || looksLikeReplan(m.Text) {
-			recent, _ := b.Store.GetMessages(ctx, m.GroupID, nil, 20, false)
-			alreadyCancel := looksLikeCancelBooking(m.Text)
-			for _, msg := range recent {
-				if looksLikeCancelBooking(msg.Text) {
-					alreadyCancel = true
-					break
-				}
-			}
-			h := harvestText(m.Text, b.today())
-			if alreadyCancel || h.Destination == "" {
-				return b.reopenAndPlan(ctx, trip, m)
-			}
-			old := trip.Destination
-			if old == "" {
-				old = "the current trip"
-			}
-			return b.startChangePoll(ctx, trip, m, &models.PendingChange{
-				Kind:        "reopen",
-				Summary:     fmt.Sprintf("Cancel %s and plan %s instead?", old, h.Destination),
-				Destination: h.Destination,
-				Dates:       h.Dates,
-			})
-		}
-		return b.answerQuestion(ctx, trip, m)
-	}
-	if trip.State == models.Cancelled {
-		if m.Tagged || looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
-			trip, err = store.SetState(ctx, b.Store, trip.ID, models.Collecting, map[string]any{"introduced": false})
-			if err != nil {
-				return err
-			}
-			if m.Tagged {
-				var stop bool
-				stop, trip, err = b.maybeIntroduce(ctx, trip, m)
-				if err != nil || stop {
-					return err
-				}
-			}
-			return b.runIntakeTurn(ctx, trip, m)
-		}
-		return nil
-	}
-
-	slog.Info("trip loaded", "group", m.GroupID, "state", trip.State,
-		"people", len(trip.Participants), "options", len(trip.Options),
-		"origin", trip.Origin, "dates", hasAnyDates(trip.Participants))
-
-	if m.Tagged {
-		var stop bool
-		stop, trip, err = b.maybeIntroduce(ctx, trip, m)
-		if err != nil || stop {
+		if err := b.Store.BindUnassignedMessages(ctx, trip.GroupID, trip.SessionID, trip.HistoryStart); err != nil {
 			return err
 		}
 	}
-
-	// Scoped to non-Collecting states: during intake there's no chosen option yet, so "let's
-	// book"/"sounds good" phrasing can only be answering the current intake question, not a real
-	// book-ask. runIntakeTurn's own extraction.Approval handles an explicit ✅ at the readiness gate.
-	if trip.State != models.Collecting && (looksLikeSearchAsk(m.Text) || looksLikeBookAsk(m.Text)) {
-		return b.handleBookAsk(ctx, trip, m)
-	}
-
-	switch trip.State {
-	case models.Collecting:
-		if looksLikeDirectQuestion(m.Text) {
-			return b.answerQuestion(ctx, trip, m)
-		}
-		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
-			return nil
-		}
-		return b.runIntakeTurn(ctx, trip, m)
-	case models.AwaitingChoice, models.AwaitingApproval:
-		return b.onReply(ctx, trip, m)
-	case models.Searching, models.BookingState:
-		if m.Tagged || looksLikeDirectQuestion(m.Text) {
-			return b.answerQuestion(ctx, trip, m)
-		}
-	}
-	return nil
+	b.rememberRoster(ctx, trip, m)
+	return b.handleChatTurn(ctx, trip, m, sentAt)
 }
 
 // ------------------------------------------------------------------ stage: plan
@@ -762,20 +637,16 @@ func (b *Brain) startNewTrip(ctx context.Context, previous *models.Trip, m model
 	if err != nil {
 		return err
 	}
+	if err := b.attachIncomingMessages(ctx, trip); err != nil {
+		return err
+	}
 	if b.Dashboard != nil {
 		if _, err := b.Dashboard.BeginNew(ctx, trip); err != nil {
 			return err
 		}
 	}
 	b.rememberRoster(ctx, trip, m)
-	trip, err = b.capturePayer(ctx, trip, m)
-	if err != nil {
-		return err
-	}
-	stop, trip, err := b.maybeIntroduce(ctx, trip, m)
-	if err != nil || stop {
-		return err
-	}
+
 	return b.plan(ctx, trip, m.Text, m)
 }
 
@@ -785,163 +656,112 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 			return err
 		}
 	}
-	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 1000, true)
+	input, err := json.Marshal(map[string]any{
+		"current_trip":   b.conversationFacts(ctx, trip),
+		"latest_message": incoming, "requested_change": feedback,
+	})
 	if err != nil {
 		return err
 	}
-	day := b.today().Format("2006-01-02")
-	harvested := harvestFacts(history, b.today())
-	latest := strings.TrimSpace(incoming.Text)
-	if feedback != "" {
-		latest = strings.TrimSpace(feedback)
-	}
-
-	userContent := fmt.Sprintf("Latest WhatsApp message from %s:\n%s\n\nSatisfy that message. Older chat is background.\n\n", incoming.SenderName, latest)
-	userContent += fmt.Sprintf("Group: %s\nTrip state: %s\n", trip.GroupName, trip.State)
-	if trip.Origin != "" || harvested.Airport != "" || harvested.City != "" {
-		userContent += fmt.Sprintf("Known origin: %s %s %s\n", trip.Origin, harvested.Airport, harvested.City)
-	}
-	if hasAnyDates(trip.Participants) || len(harvested.Dates) > 0 {
-		userContent += "Known dates (already given — do not ask again): " + strings.Join(unionDates(allStoredDates(trip.Participants), harvested.Dates), ", ") + "\n"
-	}
-	userContent += "If the latest update says a previous booking is cancelled, ignore that old destination completely. Do not mention it except to acknowledge it's off.\n\n"
-	if roster := formatGroupRoster(incoming.Participants); roster != "" {
-		userContent += "People actually in this WhatsApp group (use these exact names for whatsapp_name; skip the bot):\n" + roster + "\n\n"
-	}
-	if known := formatKnownPrefs(trip.Participants); known != "" {
-		userContent += "Already stored from earlier in this trip (keep these; only update what the new chat actually changes; do not re-ask for fields that are filled):\n" + known + "\n\n"
-	}
-	if len(trip.Options) > 0 {
-		b, _ := json.MarshalIndent(trip.Options, "", "  ")
-		userContent += "Options already shown to the group (do not pretend you haven't proposed these unless they asked to change them):\n" + string(b) + "\n\n"
-	}
-	userContent += "Recent chat:\n" + compactChat(history, 20)
-	if feedback != "" {
-		userContent += "\n\nLatest update from the group:\n" + feedback
-	}
-
-	slog.Info("calling gemini", "stage", "plan", "from", incoming.SenderName, "text", clipLog(incoming.Text, 80))
-	planned, err := b.LLM.Structured(ctx, prompts.PlanSystem(b.Config.BotName, day),
-		[]llm.Message{{Role: "user", Content: userContent}},
-		toSchema(prompts.PlanTrip))
+	planned, err := b.structured(ctx, trip, prompts.PlanSystem(b.Config.BotName, b.today().Format("2006-01-02")),
+		[]llm.Message{{Role: "user", Content: string(input)}}, toSchema(prompts.PlanTrip))
 	if err != nil {
 		return err
 	}
-
-	var people []models.Participant
-	if err := decodeInto(planned["participants"], &people); err != nil {
+	var extracted []models.Participant
+	if err := decodeInto(planned["participants"], &extracted); err != nil {
 		return err
 	}
-	people = snapNamesToRoster(people, incoming.Participants)
-	people = mergeParticipants(trip.Participants, people)
-	people = applyHarvest(people, harvested, incoming.Participants)
-	if len(people) == 0 {
-		people = applyHarvest(nil, harvested, incoming.Participants)
-	}
-	if len(people) == 0 {
-		if trip.AskedDates && trip.AskedOrigin {
-			return nil
+	extracted = snapNamesToRoster(extracted, trip.Roster)
+	for i, raw := range sliceAny(planned["participants"]) {
+		if i < len(extracted) && asMapAny(raw)["flight_preferences"] == nil {
+			if previous := matchName(extracted[i].WhatsAppName, trip.Participants); previous != nil {
+				extracted[i].FlightPreferences = previous.FlightPreferences
+			}
 		}
-		return b.say(ctx, trip.GroupID, "Catch me up on where you'd fly out of and which dates could work.", nil)
 	}
+	people := mergeParticipants(trip.Participants, extracted)
 	for i := range people {
 		if people[i].PID == "" {
 			people[i].PID = fmt.Sprintf("p_%d_%d", time.Now().UnixNano(), i)
 		}
 	}
 	fields := map[string]any{"participants": people}
-	if origin := people[0].Origin; origin != "" {
-		fields["origin"] = origin
-	} else if people[0].OriginCity != "" {
-		fields["origin"] = people[0].OriginCity
-	} else if people[0].OriginAirport != "" {
-		fields["origin"] = people[0].OriginAirport
+	if budget, ok := planned["budget_note"].(string); ok {
+		fields["budget_note"] = budget
 	}
-	if harvested.Destination != "" && trip.Destination == "" {
-		fields["destination"] = harvested.Destination
-	}
-	if harvested.Budget != "" && trip.BudgetNote == "" {
-		fields["budget_note"] = harvested.Budget
+	if len(people) > 0 {
+		fields["origin"] = orStr(people[0].OriginAirport, orStr(people[0].OriginCity, people[0].Origin))
 	}
 	trip, err = b.Store.UpdateTrip(ctx, trip.ID, fields)
 	if err != nil {
 		return err
 	}
-
-	if !hasSharedOrigin(people) {
-		if trip.AskedOrigin {
-			slog.Info("skipping origin re-ask", "trip", trip.ID)
-		} else {
-			if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_origin": true}); err != nil {
-				return err
-			}
-			return b.askOrigin(ctx, trip)
+	var missing []string
+	if err := decodeInto(planned["missing_info"], &missing); err != nil {
+		return err
+	}
+	for _, question := range missing {
+		if strings.TrimSpace(question) != "" {
+			return b.sayReply(ctx, trip.GroupID, question)
 		}
-	} else if trip.AskedOrigin {
-		_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_origin": false})
+	}
+	if len(people) == 0 || !allOriginsKnown(people) {
+		return b.askOrigin(ctx, trip)
 	}
 	if !hasAnyDates(people) {
-		if trip.AskedDates {
-			slog.Info("skipping dates re-ask", "trip", trip.ID)
-		} else {
-			if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_dates": true}); err != nil {
-				return err
-			}
-			return b.askDates(ctx, trip)
-		}
-	} else if trip.AskedDates {
-		_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_dates": false})
+		return b.askDates(ctx, trip)
 	}
-	if !enoughToPlan(people) {
-		return nil
-	}
-	if tripDestination(trip) != "" && len(trip.Options) > 0 && !looksLikeReplan(incoming.Text) {
-		return b.answerQuestion(ctx, trip, incoming)
-	}
-
 	var options []models.Option
-	if rawOptions, ok := planned["options"].([]any); ok {
-		for _, raw := range rawOptions {
-			if len(options) >= 3 {
-				break
-			}
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
-			}
-			opt, err := optionFromMap(len(options)+1, m)
-			if err != nil {
-				slog.Warn("dropping invalid option", "option", m, "err", err)
-				continue
-			}
-			options = append(options, opt)
+	for _, raw := range sliceAny(planned["options"]) {
+		if len(options) == 3 {
+			break
 		}
+		option, err := optionFromMap(len(options)+1, asMapAny(raw))
+		if err != nil {
+			return err
+		}
+		depart, _ := models.ParseDate(option.EmbarkingDate)
+		ret, _ := models.ParseDate(option.ReturningDate)
+		today, _ := models.ParseDate(b.today().Format("2006-01-02"))
+		if !ret.After(depart) || depart.Before(today) || !validIATA(option.DestinationAirport) {
+			return b.say(ctx, trip.GroupID, "The proposed dates or destination airport could not be validated. No option was saved. Ask for the missing or corrected detail.", nil)
+		}
+		option.DurationNights = int(ret.Sub(depart).Hours() / 24)
+		options = append(options, option)
 	}
-
-	intro, _ := planned["intro"].(string)
 	if len(options) == 0 {
-		var ok bool
-		trip, intro, options, ok, err = b.propose(ctx, trip, people, day, feedback, true)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-	} else {
-		trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"options": options})
-		if err != nil {
-			return err
-		}
+		return b.say(ctx, trip.GroupID, "Preferences were saved, but no complete trip option was produced. Answer the latest request using the saved facts and ask only for what still prevents a proposal.", nil)
 	}
-
-	if trip.State != models.AwaitingChoice {
-		trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
-		if err != nil {
-			return err
-		}
+	if violations := validateOptions(options, people); len(violations) > 0 {
+		data, _ := json.Marshal(violations)
+		return b.say(ctx, trip.GroupID, "No option was saved because it conflicts with stated availability. Explain the conflict and ask how to resolve it: "+string(data), nil)
+	}
+	fields = map[string]any{
+		"options": options, "chosen_option_position": 0,
+		"destination": "", "destination_airport": "", "embarking_date": "", "returning_date": "",
+		"duration_nights": 0, "flights_locked": false,
+		"itinerary": map[string]any{}, "flights": []models.Flight{}, "accommodations": []models.Accommodation{},
+		"last_poll": "", "pending_question": nil,
+	}
+	trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, fields)
+	if err != nil {
+		return err
+	}
+	intro, _ := planned["intro"].(string)
+	if len(options) == 1 && !searchDeferred(ctx) {
+		return b.selectOption(ctx, trip, options[0].Position)
 	}
 	return b.postOptions(ctx, trip, intro, options)
+}
+
+func allOriginsKnown(people []models.Participant) bool {
+	for _, person := range people {
+		if person.OriginAirport == "" && person.OriginCity == "" && person.Origin == "" {
+			return false
+		}
+	}
+	return len(people) > 0
 }
 
 // propose asks Gemini for 2-3 options, persists them onto the trip, and returns the updated trip.
@@ -964,7 +784,7 @@ func (b *Brain) propose(ctx context.Context, trip *models.Trip, people []models.
 	content := "Participants:\n" + strings.Join(lines, "\n")
 
 	slog.Info("calling gemini", "stage", "propose", "trip", trip.ID)
-	proposal, err := b.LLM.Structured(ctx, prompts.ProposeSystem(b.Config.BotName, day, fb),
+	proposal, err := b.structured(ctx, trip, prompts.ProposeSystem(b.Config.BotName, day, fb),
 		[]llm.Message{{Role: "user", Content: content}}, toSchema(prompts.ProposeOptions))
 	if err != nil {
 		return trip, "", nil, false, err
@@ -1142,34 +962,8 @@ func intentNumber(v any) int {
 	}
 }
 
-// interpret uses regex only for 1/2/3 and yes/no. Tagged chat goes to Gemini.
+// interpret is retained for legacy callers; all replies are interpreted in context.
 func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (map[string]any, error) {
-	if trip.State == models.AwaitingChoice {
-		if hit := choiceOnlyRe.FindStringSubmatch(m.Text); hit != nil {
-			n, _ := strconv.Atoi(hit[1])
-			return map[string]any{"intent": "choose", "option_number": float64(n)}, nil
-		}
-	}
-	if trip.State == models.AwaitingApproval && (approveOnlyRe.MatchString(m.Text) || looksLikeBookAsk(m.Text)) {
-		return map[string]any{"intent": "approve"}, nil
-	}
-	if trip.State == models.AwaitingApproval {
-		if rejectOnlyRe.MatchString(m.Text) {
-			return map[string]any{"intent": "reject"}, nil
-		}
-	}
-	if looksLikeSearchAsk(m.Text) {
-		return map[string]any{"intent": "search"}, nil
-	}
-	if looksLikeBookAsk(m.Text) {
-		if trip.State == models.AwaitingApproval {
-			return map[string]any{"intent": "approve"}, nil
-		}
-		return map[string]any{"intent": "search"}, nil
-	}
-	if !m.Tagged && !looksLikeDirectQuestion(m.Text) {
-		return nil, nil
-	}
 
 	optLabels := "none"
 	if len(trip.Options) > 0 {
@@ -1181,7 +975,7 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	}
 	user := fmt.Sprintf("Latest WhatsApp message from %s:\n%s\nTrip destination: %s\nDates: %s to %s\n",
 		m.SenderName, m.Text, tripDestination(trip), trip.EmbarkingDate, trip.ReturningDate)
-	out, err := b.LLM.Structured(ctx, prompts.InterpretSystem(string(trip.State), optLabels),
+	out, err := b.structured(ctx, trip, prompts.InterpretSystem(string(trip.State), optLabels),
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.InterpretReply))
 	if err != nil {
 		return map[string]any{"intent": "question"}, nil
@@ -1261,22 +1055,20 @@ func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.
 	if err != nil {
 		return err
 	}
-	history, _ := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 30, true)
 	user := fmt.Sprintf("Latest WhatsApp message from %s:\n%s\n", m.SenderName, m.Text)
 	if q := quotedText(m); q != "" {
 		user += "They are quoting this bot/group line:\n" + q + "\n"
 	}
 	user += "\nLOCKED TRIP FACTS (JSON). Use these. Inventing prices or airports is not allowed.\n" + string(facts)
-	user += "\n\nRecent chat:\n" + compactChat(history, 12)
 	user += "\n\nReply to the latest message only. Never claim you are sending a photo or picture. If they asked about the hotel, name the stay — a Google Maps pin is sent separately."
 	slog.Info("calling gemini", "stage", "reply", "from", m.SenderName, "text", clipLog(m.Text, 80))
-	answer, err := b.LLM.Agent(ctx, prompts.AgentSystem(b.Config.BotName, string(facts)),
+	answer, err := b.agent(ctx, trip, prompts.AgentSystem(b.Config.BotName, string(facts)),
 		[]llm.Message{{Role: "user", Content: user}},
 		nil, nil)
 	if err != nil {
 		return err
 	}
-	return b.say(ctx, trip.GroupID, answer, nil)
+	return b.sayReply(ctx, trip.GroupID, answer)
 }
 
 func (b *Brain) postLockedStatus(ctx context.Context, trip *models.Trip) error {
@@ -1305,36 +1097,6 @@ func (b *Brain) postLockedStatus(ctx context.Context, trip *models.Trip) error {
 		text = "Nothing is locked yet — I still need a destination and a fare search."
 	}
 	return b.say(ctx, trip.GroupID, text, nil)
-}
-
-func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, *models.Trip, error) {
-	if trip == nil || !m.Tagged {
-		return false, trip, nil
-	}
-	force := looksLikeIntroAsk(m.Text)
-	if !force && trip.Introduced {
-		return false, trip, nil
-	}
-	if err := b.say(ctx, trip.GroupID, formatting.IntroMessage(b.Config.BotName), nil); err != nil {
-		return true, trip, err
-	}
-	if !trip.Introduced {
-		updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"introduced": true})
-		if err != nil {
-			return true, trip, err
-		}
-		if updated != nil {
-			trip = updated
-		} else {
-			trip.Introduced = true
-		}
-	}
-	onlyIntro := looksLikeIntroAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
-		!looksLikeStatusAsk(m.Text) && !looksLikeDashboardAsk(m.Text) && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants)
-	if onlyIntro || looksLikeOnlyGreeting(m.Text) {
-		return true, trip, nil
-	}
-	return false, trip, nil
 }
 
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
@@ -1411,9 +1173,9 @@ func (b *Brain) handleBookAsk(ctx context.Context, trip *models.Trip, m models.I
 			return err
 		}
 		if n == 0 {
-			history, histErr := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 80, true)
+			history, histErr := b.sessionHistory(ctx, trip)
 			if histErr == nil {
-				h := harvestFacts(history, b.today())
+				h := harvestFacts(historySince(history, trip.HistoryStart), b.today())
 				if h.Destination != "" {
 					if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"destination": h.Destination}); err != nil {
 						return err
@@ -1603,7 +1365,7 @@ func (b *Brain) generateAdvisorItinerary(ctx context.Context, trip *models.Trip,
 	user := fmt.Sprintf("City: %s\nDays: %d\nDates: %s\nOrigin: %s\nTastes: %s\nRequest: %s\n\n%s\nLOCKED FACTS:\n%s\n\nDay 1 arrival must match the inbound flight airport in locked facts. Do not invent fares, hotels, or airports. Do estimate meal CAD for itinerary only.\n",
 		dest, days, dates, trip.Origin, formatKnownPrefs(trip.Participants), request, foodBudgetHint(trip, days), string(factsJSON))
 	slog.Info("calling gemini", "stage", "itinerary", "from", from, "text", clipLog(request, 80))
-	out, err := b.LLM.Structured(ctx, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")),
+	out, err := b.structured(ctx, trip, prompts.ItinerarySystem(b.Config.BotName, b.today().Format("2006-01-02")),
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.DayItinerary))
 	if err != nil {
 		return trip, nil, err
@@ -1662,7 +1424,7 @@ func (b *Brain) writeRestaurantPlan(ctx context.Context, trip *models.Trip, m mo
 		dest, formatting.Dates(trip.EmbarkingDate, trip.ReturningDate), formatKnownPrefs(trip.Participants),
 		trip.CulinaryDescription, m.Text, foodBudgetHint(trip, tripNights(trip, m.Text)), string(factsJSON))
 	slog.Info("calling gemini", "stage", "restaurants", "from", m.SenderName, "text", clipLog(m.Text, 80))
-	out, err := b.LLM.Structured(ctx, prompts.RestaurantSystem(b.Config.BotName, dest),
+	out, err := b.structured(ctx, trip, prompts.RestaurantSystem(b.Config.BotName, dest),
 		[]llm.Message{{Role: "user", Content: user}}, toSchema(prompts.RestaurantPicks))
 	if err != nil {
 		return err
@@ -1757,10 +1519,6 @@ func (b *Brain) lockChosenOption(ctx context.Context, trip *models.Trip, number 
 		} else if trip.EmbarkingDate != "" && trip.ReturningDate != "" {
 			option.EmbarkingDate = trip.EmbarkingDate
 			option.ReturningDate = trip.ReturningDate
-		} else {
-			start, end := comingWeekend(b.today())
-			option.EmbarkingDate = start.Format("2006-01-02")
-			option.ReturningDate = end.Format("2006-01-02")
 		}
 	}
 	if option.DurationNights == 0 {
@@ -1798,10 +1556,16 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	if err != nil {
 		return b.say(ctx, trip.GroupID, fmt.Sprintf("I only put up 1–%d. Which of those?", len(trip.Options)), nil)
 	}
-	return b.offerPlanFinalize(ctx, trip)
+	if searchDeferred(ctx) {
+		return b.say(ctx, trip.GroupID, "The destination option is selected. The user asked to defer searching, so no flight or hotel search has started.", nil)
+	}
+	return b.startTravelSearch(ctx, trip)
 }
 
 func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error {
+	if trip.State != models.AwaitingChoice {
+		return b.say(ctx, trip.GroupID, "No new search was started. Explain the current trip state and share its existing live or completed session if available.", nil)
+	}
 	option := trip.ChosenOption()
 	if option == nil {
 		return b.say(ctx, trip.GroupID, "Pick a destination first, then I'll send the plan to finalize.", nil)
@@ -1816,15 +1580,17 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 		if len(dates) >= 2 {
 			option.EmbarkingDate = dates[0]
 			option.ReturningDate = dates[len(dates)-1]
-		} else {
-			start, end := comingWeekend(b.today())
-			option.EmbarkingDate = start.Format("2006-01-02")
-			option.ReturningDate = end.Format("2006-01-02")
 		}
 	}
-	if option.DurationNights == 0 {
-		option.DurationNights = tripNights(trip, "")
+	depart, departErr := models.ParseDate(option.EmbarkingDate)
+	ret, returnErr := models.ParseDate(option.ReturningDate)
+	if departErr != nil || returnErr != nil || !ret.After(depart) {
+		return b.say(ctx, trip.GroupID, "Search has not started because valid departure and return dates are missing. Ask for those dates; do not assume a weekend.", nil)
 	}
+	if !validIATA(option.DestinationAirport) || !allOriginsKnown(trip.Participants) || !validIATA(originAirportCode(trip.Origin, trip.Participants)) {
+		return b.say(ctx, trip.GroupID, "Search has not started because a departure or destination airport is missing. Ask for the missing airport.", nil)
+	}
+	option.DurationNights = int(ret.Sub(depart).Hours() / 24)
 	trip, err := store.SetState(ctx, b.Store, trip.ID, models.Searching, nil)
 	if err != nil {
 		return err
@@ -1833,20 +1599,35 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	if b.Dashboard != nil {
 		sessionID, err = b.Dashboard.BeginLive(ctx, trip)
 		if err != nil {
+			_, _ = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
 			return err
 		}
 	}
-	if err := b.say(ctx, trip.GroupID, fmt.Sprintf("%s is locked. Searching real flights and stays now.", option.Destination), nil); err != nil {
-		return err
-	}
-	if err := b.shareLiveSearch(ctx, trip, sessionID); err != nil {
-		return err
-	}
-
 	people := trip.Participants
 	originAirport := originAirportCode(trip.Origin, people)
 
-	offers, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
+	// Start the real work before composing the progress message. A slow model
+	// or failed chat delivery must not leave a shared session idle.
+	type searchResult struct {
+		flights   []models.FlightOffer
+		hotels    []models.HotelOffer
+		flightErr error
+		hotelErr  error
+	}
+	done := make(chan searchResult, 1)
+	go func() {
+		flights, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
+		done <- searchResult{flights, hotels, flightErr, hotelErr}
+	}()
+	_ = b.say(ctx, trip.GroupID, fmt.Sprintf("Flight and stay searches have been launched for %s. Share the live session link.", option.Destination), nil)
+	_ = b.shareLiveSearch(ctx, trip, sessionID)
+	if err := b.flushReply(ctx, trip.GroupID); err != nil {
+		if turn, ok := ctx.Value(replyTurnKey{}).(*replyTurn); ok {
+			turn.Notes, turn.Buttons, turn.Generated = nil, nil, ""
+		}
+	}
+	result := <-done
+	offers, hotels, flightErr, hotelErr := result.flights, result.hotels, result.flightErr, result.hotelErr
 	if hotelErr != nil || len(hotels) == 0 {
 		message := "No stay was found. Choose another option in the group chat."
 		if hotelErr != nil {
@@ -2076,52 +1857,7 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 
 // ------------------------------------------------------------------ outbound
 
-func (b *Brain) say(ctx context.Context, groupID, text string, buttons []messaging.Button) error {
-	text = scrubWhatsAppIDs(text)
-	if err := b.Messenger.Send(ctx, groupID, text, buttons); err != nil {
-		return err
-	}
-	trip, err := b.Store.GetTrip(ctx, groupID)
-	if err != nil {
-		return err
-	}
-	tripID := ""
-	if trip != nil {
-		tripID = trip.ID
-	}
-	_, err = b.Store.SaveMessage(ctx, &models.Message{
-		GroupID: groupID, TripID: tripID, SenderID: "bot", SenderName: b.Config.BotName,
-		Text: text, IsBot: true, SentAt: models.Now(),
-	})
-	return err
-}
-
 // ------------------------------------------------------------------ helpers
-
-func compactChat(history []models.Message, n int) string {
-	if n <= 0 || len(history) == 0 {
-		return ""
-	}
-	if len(history) > n {
-		history = history[len(history)-n:]
-	}
-	lines := make([]string, 0, len(history))
-	for _, msg := range history {
-		who := msg.SenderName
-		if msg.IsBot {
-			who = "Fare"
-		}
-		text := strings.TrimSpace(msg.Text)
-		if len(text) > 180 {
-			text = text[:180] + "…"
-		}
-		if text == "" {
-			continue
-		}
-		lines = append(lines, who+": "+text)
-	}
-	return strings.Join(lines, "\n")
-}
 
 func clipLog(s string, n int) string {
 	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")

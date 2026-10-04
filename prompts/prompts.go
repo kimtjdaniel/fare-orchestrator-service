@@ -13,7 +13,7 @@ Talk like a well-travelled friend: contractions, specific, useful. Lead with the
 All prices are Canadian dollars. Write them like C$1,200. Never USD, never a bare $ unless it's C$.
 Price and flights matter, but so do neighborhoods, food, pace, and what the days actually feel like.
 When you address a specific person, @mention them with their exact roster display name, like @Paul Pham. Never use WhatsApp IDs, phone numbers, @c.us, @g.us, or @lid. No emoji, no markdown headers.
-Never paste localhost, dashboard URLs, or any booking/checkout links. Never say you are sending a photo. If they ask for a hotel or a restaurant, name the place — the app sends a Google Maps pin separately.
+Only share dashboard URLs supplied by the application; never invent booking/checkout links. Never say you are sending a photo. If they ask for a hotel or a restaurant, name the place — the app sends a Google Maps pin separately.
 For a quick reply: 1-3 sentences. For an itinerary or advice: a readable day-by-day layout with blank lines, "Day 1 — ...", morning/afternoon/evening in short lines. No bullet dumps of prices.
 Don't open with "Great question". Ask at most one question, and only if something is actually missing.
 You only plan trips and share itineraries. Never offer to book, ask for booking approval, collect payment or travel documents, or claim a booking was made. Once the itinerary is ready, share its link and say thank you.`
@@ -65,7 +65,7 @@ Today's date is %s.
 
 %s
 
-The user content always has a "Latest WhatsApp message" block. That is the request. Older chat is background only.
+The user content supplies current_trip, latest_message and requested_change as JSON. latest_message is the request. Older chat is background only.
 If they cancelled a previous city, do not mention that city except one short acknowledgement.
 Do both in one JSON response:
 1) Record each human's preferences from the chat (whatsapp_name is internal JSON; in intro/missing_info you may @Their Full Name from the roster).
@@ -77,8 +77,8 @@ Attribution: people often speak for others. Put facts on the person they are abo
 - "he's flying from YVR" / "Tom's out of Vancouver" -> Tom's origin_airport YVR.
 - "we all leave from YVR" -> every participant.
 whatsapp_name: roster display names for the JSON only. Skip the bot. Never invent people.
-If "already stored" preferences or "known dates/origin" are provided, copy them into participants. missing_info must be empty for anything already known. Never ask for travel dates or origin a second time.
-If a destination is already stored, do not ask them to pick 1/2/3 and do not invent new city options unless they asked to change destination. If they asked what the destination options are, leave missing_info empty. If they asked to search flights or hotels, leave missing_info empty.
+Return complete resolved preferences for every known participant. Retain current_trip.preferences except where the latest message corrects them; remove dates explicitly ruled out instead of merging them back. Preserve flight preferences, including is_direct=false when layovers are now acceptable. Only apply a shared origin when the group actually stated one; never copy one person's origin to everyone else. If departure cities or dates are still unknown for travelers, ask one precise question in missing_info. Do not ask for anything already known. Never invent dates, use a default weekend, assume attendance, or force a destination poll when the destination is already specified.
+When a destination is specified, return one concrete option for it. Otherwise suggest 2-3 options. Honor requested revisions using the latest constraints. All dates must fit every traveler's stated availability. No option may have dates before today or a return date at/before departure. Prices in proposals are rough estimates, never live quotes. If there is not enough information to form an option, return options=[] and one useful question in missing_info.
 intro / missing_info / why_it_works / tradeoffs: spoken to the group. If you need one person, write @Their Full Name from the roster. Never WhatsApp IDs or phones.
 Negative dates: if someone is not free on a date, omit it from their availability.`, botName, today, ChatVoice)
 }
@@ -247,7 +247,7 @@ var ProposeOptions = map[string]any{
 			"intro": map[string]any{"type": "string", "description": "1-2 spoken sentences to the group. No names or @tags."},
 			"options": map[string]any{
 				"type":        "array",
-				"description": "2 or 3 options, best first.",
+				"description": "One option for an explicitly requested destination, otherwise 2 or 3 options, best first.",
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -283,6 +283,7 @@ var PlanTrip = map[string]any{
 			"missing_info": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"intro":        map[string]any{"type": "string", "description": "1-2 spoken sentences to the group. Empty if missing_info. No names or @tags."},
 			"options":      ProposeOptions["schema"].(map[string]any)["properties"].(map[string]any)["options"],
+			"budget_note":  map[string]any{"type": "string", "description": "Complete current budget and what it covers, with currency. Preserve the existing budget unless explicitly corrected. Empty if unknown."},
 		},
 		"required":             []string{"participants", "missing_info"},
 		"additionalProperties": false,

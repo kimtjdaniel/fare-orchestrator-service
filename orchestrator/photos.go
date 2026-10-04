@@ -8,7 +8,6 @@ import (
 
 	"fare-brain/formatting"
 	"fare-brain/models"
-	"fare-brain/tools"
 )
 
 func (b *Brain) sendHotelMap(ctx context.Context, trip *models.Trip) error {
@@ -35,24 +34,6 @@ func (b *Brain) hotelForTrip(ctx context.Context, trip *models.Trip) (*models.Ho
 			}
 		}
 	}
-	city := trip.Destination
-	checkIn, checkOut := trip.EmbarkingDate, trip.ReturningDate
-	if city == "" && len(trip.Options) > 0 {
-		city = trip.Options[0].Destination
-		checkIn = trip.Options[0].EmbarkingDate
-		checkOut = trip.Options[0].ReturningDate
-	}
-	if city == "" || checkIn == "" || checkOut == "" {
-		return nil, nil
-	}
-	guests := len(trip.Participants)
-	if guests < 1 {
-		guests = 2
-	}
-	offers, err := tools.SearchHotels(ctx, b.Config, city, checkIn, checkOut, guests, nil)
-	if err != nil || len(offers) == 0 {
-		return nil, err
-	}
-	h := offers[0]
-	return &h, nil
+	// Reading or sharing a map must not launch a new search or choose a stay.
+	return nil, nil
 }
