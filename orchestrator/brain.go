@@ -230,6 +230,9 @@ func looksLikeOnlyGreeting(text string) bool {
 }
 
 func looksLikeSearchAsk(text string) bool {
+	if looksLikePlanRecap(text) || looksLikeItineraryAsk(text) || looksLikeRestaurantAsk(text) || looksLikeFoodMoneyAsk(text) || looksLikeStatusAsk(text) {
+		return false
+	}
 	return searchAskRe.MatchString(text)
 }
 
@@ -1090,6 +1093,9 @@ func (b *Brain) replan(ctx context.Context, trip *models.Trip, feedback string) 
 // ------------------------------------------------------------------ replies
 
 func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	if looksLikeAdvisorAsk(m.Text) && !looksLikeCancelBooking(m.Text) && !looksLikeReplan(m.Text) && !looksLikeSearchAsk(m.Text) && !looksLikeBookAsk(m.Text) {
+		return b.answerDuringIntake(ctx, trip, m)
+	}
 	intent, err := b.interpret(ctx, trip, m)
 	if err != nil {
 		return err
@@ -1113,6 +1119,9 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.postOptions(ctx, trip, "No worries — here they are again.", trip.Options)
 	case kind == "revise":
+		if looksLikeAdvisorAsk(m.Text) && !looksLikeReplan(m.Text) {
+			return b.answerDuringIntake(ctx, trip, m)
+		}
 		if trip.State == models.AwaitingApproval {
 			trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
 			if err != nil {
@@ -1125,6 +1134,9 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.plan(ctx, trip, revision, m)
 	case kind == "cancel":
+		if !looksLikeCancelBooking(m.Text) {
+			return b.answerQuestion(ctx, trip, m)
+		}
 		if _, err := store.SetState(ctx, b.Store, trip.ID, models.Cancelled, nil); err != nil {
 			return err
 		}

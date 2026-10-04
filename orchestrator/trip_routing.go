@@ -51,6 +51,9 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 	if m.Tagged && quotedText(m) == "" && isStandaloneNewTripRequest(text) {
 		return trip, m, true, b.startNewTrip(ctx, trip, m, sentAt)
 	}
+	if looksLikePlanRecap(text) || (looksLikeAdvisorAsk(text) && !looksLikeNewTripRequest(text) && !looksLikeCancelBooking(text) && !looksLikeReplan(text)) {
+		return trip, m, false, nil
+	}
 
 	history, err := b.Store.GetMessages(ctx, m.GroupID, trip.HistoryStart, 20, true)
 	if err != nil {
@@ -105,6 +108,9 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		}
 	}
 	if action == "new_trip" {
+		if looksLikePlanRecap(text) || (looksLikeAdvisorAsk(text) && !looksLikeNewTripRequest(text)) {
+			return trip, m, false, nil
+		}
 		return trip, m, true, b.startNewTrip(ctx, trip, m, sentAt)
 	}
 	return trip, m, false, nil

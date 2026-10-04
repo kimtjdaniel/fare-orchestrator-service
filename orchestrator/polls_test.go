@@ -105,6 +105,15 @@ func TestReplanItalyApril(t *testing.T) {
 	if !looksLikePlanRecap("run me the plan again") {
 		t.Fatal("expected plan recap")
 	}
+	if looksLikeReplan("dinner in Rome") || looksLikeReplan("how much was the London hotel") {
+		t.Fatal("mentioning a city is not a replan")
+	}
+	if looksLikeCancelBooking("don't cancel") || looksLikeCancelBooking("run me the plan again") {
+		t.Fatal("recap and don't-cancel must not cancel")
+	}
+	if looksLikeSearchAsk("please find restaurants in Naples") || looksLikeSearchAsk("run me the plan again") {
+		t.Fatal("a read request must not start search")
+	}
 	if parseDestination("go to what please") != "" {
 		t.Fatal("junk phrase must not be a destination")
 	}

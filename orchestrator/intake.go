@@ -62,7 +62,7 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 		extraction = nil
 	}
 
-	if extraction != nil && extraction.TripIntent == "cancel" {
+	if extraction != nil && extraction.TripIntent == "cancel" && looksLikeCancelBooking(m.Text) {
 		_, err := store.SetState(ctx, b.Store, trip.ID, models.Cancelled, nil)
 		if err != nil {
 			return err
