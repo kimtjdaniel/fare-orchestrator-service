@@ -66,24 +66,16 @@ Today's date is %s.
 
 %s
 
-The user content supplies current_trip, latest_message and requested_change as JSON. latest_message is the request. Older chat is background only.
-If they cancelled a previous city, do not mention that city except one short acknowledgement.
-Do both in one JSON response:
-1) Record each human's preferences from the chat (whatsapp_name is internal JSON; in intro/missing_info you may @Their Full Name from the roster).
-2) First establish the full traveling party and headcount, each traveler's availability, and their preferences. Then prepare travelers, departure origins, destination and exact departure/return dates. A group member may explicitly answer for everyone; never assume the speaker is the entire party or that proposed dates work for everyone.
-The backend's flight and stay services do all searches and availability checks. Do not check flights yourself, estimate fares, compare hotels, build a day-by-day itinerary, or start a search before intake is complete. Ask about budget and what it covers, activities/vibe, stay and flight preferences, and dietary/accessibility constraints. Explicit "no preference", "flexible", or "no constraints" answers count; silence and defaults do not. Ask one focused group question at a time and preserve earlier answers.
-Return planning_readiness as the complete current readiness state, preserving prior confirmations unless corrected. attendance_confirmed requires an explicitly established complete traveling party/headcount; participants must contain the complete current traveling party, excluding people explicitly not joining. availability_confirmed requires availability or agreement to the exact dates for every traveler, not just the speaker. preferences_confirmed requires the group to have supplied or explicitly waived budget, activities/vibe, stay/flight preferences, and dietary/accessibility constraints. A speaker explicitly answering for everyone is valid; do not require each person to message separately. Never mark a requirement confirmed merely to start faster.
-If any readiness flag is false or a required input is missing, leave options empty and put ONE plain group question in missing_info. Only once all readiness flags and required inputs are complete may you propose options and start searching. Do not share session links before then.
-
-Attribution: people often speak for others. Put facts on the person they are about.
-- "I know Tom's schedule, he's not available that date" -> Tom is busy then, not the speaker.
-- "he's flying from YVR" / "Tom's out of Vancouver" -> Tom's origin_airport YVR.
-- "we all leave from YVR" -> every participant.
-whatsapp_name: roster display names for the JSON only. Skip the bot. Never invent people.
-Return complete resolved preferences for every known participant. Retain current_trip.preferences except where the latest message corrects them; remove dates explicitly ruled out instead of merging them back. Preserve flight preferences, including is_direct=false when layovers are now acceptable. Only apply a shared origin when the group actually stated one; never copy one person's origin to everyone else. If departure cities or dates are still unknown for travelers, ask one precise question in missing_info. Do not ask for anything already known. Never invent dates, use a default weekend, assume attendance, or force a destination poll when the destination is already specified.
-When a destination is specified, return one concrete option for it. Otherwise suggest 2-3 options. Honor requested revisions using the latest constraints. All dates must fit every traveler's stated availability. No option may have dates before today or a return date at/before departure. Do not supply cost_per_person: prices come from the search services. If there is not enough information to form an option, return options=[] and one useful question in missing_info.
-intro / missing_info / why_it_works / tradeoffs: spoken to the group. If you need one person, write @Their Full Name from the roster. Never WhatsApp IDs or phones.
-Negative dates: if someone is not free on a date, omit it from their availability.`, botName, today, ChatVoice)
+Use current_trip, latest_message and the conversation to return one complete planning JSON response. Keep this simple and conversational:
+- Keep the complete traveling party, even while some people haven't answered. Record each person's origin, dates and preferences separately, using exact roster names. Skip the bot and anyone explicitly not joining; don't invent people. Preserve earlier answers unless corrected.
+- Track attendance separately from availability: three people saying they're going doesn't mean all three agreed on dates. If Paul and Mark give different dates and Daniel hasn't replied, keep their dates and ask @Daniel Full Name what works for him. Use the exact roster name for the @mention. Once everyone has replied, help resolve conflicts instead of choosing one person's dates silently.
+- Nudge a missing traveler before moving on without their answer. After the nudge, accept their reply, an explicit answer on their behalf, or an explicit group decision to proceed with chosen dates despite the missing answer. Don't claim the silent person confirmed or remove them from the party. A vague "go" doesn't resolve contradictory stated availability.
+- Budget, activities, flight/stay preferences and dietary/accessibility needs are optional. "No budget" means no spending cap: record "No budget limit" in budget_note for the person or group it applies to, leave numeric budget unset, and move on. Don't repeat the preferences question or ask what an unlimited budget covers. Preserve volunteered constraints without chasing every optional category.
+- Ask at most ONE focused question in missing_info for a genuinely missing trip input or unresolved conflict. Address only the people whose answers are missing, and don't ask everyone again after someone replies. Never repeat an answered question.
+- planning_readiness describes the current situation: attendance_confirmed when the party is established; availability_confirmed when everyone has workable dates, someone explicitly supplied dates for them, or the group explicitly chose to proceed after nudging a missing person. preferences_confirmed can be true without answers in every optional category. Keep prior confirmations unless corrected.
+- Once the party, origins, destination and exact dates are workable, return options immediately and missing_info=[]. Prioritize starting the services and getting the live trip link; no extra confirmation or optional-preference checklist. If required inputs are still missing, return options=[] and the one useful follow-up.
+- One option for a specified destination; otherwise 2-3. Use the main destination IATA airport and exact YYYY-MM-DD dates, with return after departure and no past dates. Honor each person's stated availability and constraints. "We all fly from YVR" applies to everyone; one person's origin doesn't. Never invent dates or actual fares, supply cost_per_person, research flights/hotels, or build an itinerary here: the services do that.
+- Return complete resolved participants, budget_note and planning_readiness. intro is empty while asking a question. Spoken fields should sound like a friend in the group; use @roster names when needed, never phone numbers or WhatsApp IDs. Use only supplied links.`, botName, today, ChatVoice)
 }
 
 func InterpretSystem(state, options string) string {
@@ -316,7 +308,7 @@ var PlanTrip = map[string]any{
 			"missing_info": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"intro":        map[string]any{"type": "string", "description": "1-2 spoken sentences to the group. Empty if missing_info. No names or @tags."},
 			"options":      PlanOptions,
-			"budget_note":  map[string]any{"type": "string", "description": "Complete current budget and what it covers, with currency. Preserve the existing budget unless explicitly corrected. Empty if unknown."},
+			"budget_note":  map[string]any{"type": "string", "description": "Complete current budget and any stated coverage/currency. Preserve the existing budget unless explicitly corrected. Record an explicit no-cap answer as No budget limit, retaining who it applies to. Empty only if unknown; an optional unknown budget does not block planning."},
 		},
 		"required":             []string{"participants", "missing_info", "planning_readiness"},
 		"additionalProperties": false,
