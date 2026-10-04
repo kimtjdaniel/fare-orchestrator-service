@@ -50,7 +50,7 @@ Pick exactly one action for the LATEST message:
 - cancel: they explicitly say cancel, call it off, or scrap this trip.
 - new_trip: they explicitly want a separate trip, not a change to this one.
 - ignore: chatter not aimed at the bot.
-If a pending question is set and the message answers it, the action is intake.`, state, pending, destination, ReadNotAct)
+If a pending question is set, intake is ONLY when the latest message actually answers that question (a name, a date, a city, a budget, a yes). "plan it", "try again", "hi", a recap, or an itinerary request is never intake.`, state, pending, destination, ReadNotAct)
 }
 
 var TurnRoute = map[string]any{

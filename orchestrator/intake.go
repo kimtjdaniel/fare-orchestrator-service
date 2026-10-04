@@ -90,6 +90,8 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 	if extraction == nil {
 		extraction = &intakeExtraction{TripIntent: "none"}
 	}
+	extraction.SourceText = m.Text
+	extraction.SenderName = m.SenderName
 	if trip.PendingQuestion != nil && fieldSatisfied(trip, trip.PendingQuestion.Field) {
 		extraction.AnswersPendingQuestion = true
 	}
@@ -199,9 +201,15 @@ func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extractio
 		if searchEssentials(trip) {
 			return b.handoffToSearch(ctx, trip)
 		}
+		if extraction != nil && strings.TrimSpace(extraction.SourceText) != "" {
+			return b.answerQuestion(ctx, trip, models.IncomingMessage{SenderName: extraction.SenderName, Text: extraction.SourceText, Tagged: true})
+		}
 		return nil
 	}
 	if hasOpenIntakePoll(trip, missing) {
+		if extraction != nil && strings.TrimSpace(extraction.SourceText) != "" {
+			return b.answerQuestion(ctx, trip, models.IncomingMessage{SenderName: extraction.SenderName, Text: extraction.SourceText, Tagged: true})
+		}
 		return nil
 	}
 	return b.askField(ctx, trip, missing)
@@ -299,10 +307,13 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 				coming++
 			}
 		}
-		if coming < 1 {
-			return false
-		}
-		if unknown == 0 {
+	if coming < 1 {
+		return false
+	}
+	if n, ok := headcountOf(intake.Headcount); ok && n <= 1 {
+		return true
+	}
+	if unknown == 0 {
 			return true
 		}
 		// A closed attendance poll means everyone who is going has had a chance to say so.
@@ -737,6 +748,20 @@ func (b *Brain) applyChatShortcuts(ctx context.Context, trip *models.Trip, m mod
 		if soloTravelerRe.MatchString(text) && !intake.Headcount.Known() {
 			intake.Headcount = models.FieldValue{Value: float64(1), Confidence: models.Confirmed, UpdatedAt: models.Now()}
 			changed = true
+		}
+		if soloTravelerRe.MatchString(text) {
+			for i := range trip.Participants {
+				if trip.Participants[i].WaID == m.SenderID {
+					continue
+				}
+				if trip.Participants[i].Intake == nil {
+					trip.Participants[i].Intake = &models.ParticipantIntake{}
+				}
+				if trip.Participants[i].Intake.Attendance == "" || trip.Participants[i].Intake.Attendance == "unknown" {
+					trip.Participants[i].Intake.Attendance = "not_coming"
+					changed = true
+				}
+			}
 		}
 	}
 	if (h.City != "" || h.Airport != "") && (pending == fOrigin || originCueRe.MatchString(text)) {

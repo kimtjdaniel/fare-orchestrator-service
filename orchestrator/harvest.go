@@ -358,10 +358,14 @@ func cleanPlaceName(raw string) string {
 		"pricing": true, "price": true, "fare": true, "fares": true, "place": true, "places": true,
 		"what": true, "please": true, "again": true, "plan": true, "run": true, "through": true,
 		"me": true, "us": true, "here": true, "details": true,
+		"for": true, "in": true, "on": true, "to": true,
 	}
 	fields := strings.Fields(s)
 	for len(fields) > 0 && skip[strings.ToLower(fields[0])] {
 		fields = fields[1:]
+	}
+	for len(fields) > 1 && skip[strings.ToLower(fields[len(fields)-1])] {
+		fields = fields[:len(fields)-1]
 	}
 	if len(fields) == 0 || skip[strings.ToLower(fields[0])] {
 		return ""

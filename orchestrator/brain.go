@@ -2021,6 +2021,15 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	if option.DurationNights == 0 {
 		option.DurationNights = tripNights(trip, "")
 	}
+	if trip.State == models.Collecting {
+		updated, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
+		if err != nil {
+			return err
+		}
+		if updated != nil {
+			trip = updated
+		}
+	}
 	trip, err := store.SetState(ctx, b.Store, trip.ID, models.Searching, nil)
 	if err != nil {
 		return err

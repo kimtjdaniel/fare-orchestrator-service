@@ -46,10 +46,6 @@ func (b *Brain) dispatchTurn(ctx context.Context, trip *models.Trip, m models.In
 		return action == "ignore", nil
 	}
 	slog.Info("turn route", "group_id", trip.GroupID, "action", action, "text", clipLog(m.Text, 80))
-	if pending != "" && (action == "intro" || action == "answer") {
-		action = "intake"
-	}
-	if action == "intake" && !answersOpenQuestion(m.Text) {
 	switch action {
 	case "intro":
 		return true, b.say(ctx, trip.GroupID, formatting.IntroMessage(b.Config.BotName), nil)
