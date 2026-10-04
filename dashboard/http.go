@@ -16,6 +16,17 @@ func respond(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 func (m *Manager) Register(mux *http.ServeMux) {
+	mux.HandleFunc("GET /dashboard/events", m.dashboardSocket)
+	mux.HandleFunc("GET /dashboard/sessions", func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		sessions, err := m.dashboardSessionsLocked(r.Context())
+		if err != nil {
+			respond(w, 503, map[string]string{"error": "Could not load dashboard sessions"})
+			return
+		}
+		respond(w, 200, sessions)
+	})
 	mux.HandleFunc("GET /groups/{gid}/events", m.socket)
 	mux.HandleFunc("GET /groups/{gid}/sessions", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
@@ -50,7 +61,15 @@ func (m *Manager) socket(w http.ResponseWriter, r *http.Request) {
 		respond(w, 400, map[string]string{"error": "Group ID is required"})
 		return
 	}
-	// This hackathon has no authentication; each connection is explicitly scoped to one group.
+	m.serveSocket(w, r, id, false)
+}
+
+func (m *Manager) dashboardSocket(w http.ResponseWriter, r *http.Request) {
+	m.serveSocket(w, r, "", true)
+}
+
+func (m *Manager) serveSocket(w http.ResponseWriter, r *http.Request, id string, dashboardWide bool) {
+	// This hackathon has no authentication for group or dashboard connections.
 	upgrade := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 	conn, err := upgrade.Upgrade(w, r, nil)
 	if err != nil {
@@ -59,20 +78,34 @@ func (m *Manager) socket(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 	ch := make(chan []byte, 32)
 	m.mu.Lock()
-	g, err := m.load(r.Context(), id)
+	var sessions []*Snapshot
+	var revision uint64
+	kind := "group.snapshot"
+	subscribers := m.dashboardSubscribers
+	if dashboardWide {
+		sessions, err = m.dashboardSessionsLocked(r.Context())
+		revision = m.dashboardRevision
+		kind = "dashboard.snapshot"
+	} else {
+		var g *group
+		g, err = m.load(r.Context(), id)
+		if err == nil {
+			sessions, revision, subscribers = g.Sessions, g.Revision, g.subscribers
+		}
+	}
 	if err != nil {
 		m.mu.Unlock()
-		_ = conn.WriteJSON(map[string]any{"version": 1, "type": "connection.error", "groupId": id, "message": "Could not load group sessions"})
+		_ = conn.WriteJSON(map[string]any{"version": 1, "type": "connection.error", "groupId": id, "message": "Could not load planning sessions"})
 		return
 	}
-	raw, err := json.Marshal(map[string]any{"version": 1, "type": "group.snapshot", "groupId": id, "sessions": g.Sessions, "revision": g.Revision})
+	raw, err := json.Marshal(map[string]any{"version": 1, "type": kind, "groupId": id, "sessions": sessions, "revision": revision})
 	if err != nil {
 		m.mu.Unlock()
 		return
 	}
-	g.subscribers[ch] = true
+	subscribers[ch] = true
 	m.mu.Unlock()
-	defer func() { m.mu.Lock(); delete(g.subscribers, ch); m.mu.Unlock() }()
+	defer func() { m.mu.Lock(); delete(subscribers, ch); m.mu.Unlock() }()
 	conn.SetReadLimit(1024)
 	_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(60 * time.Second)) })

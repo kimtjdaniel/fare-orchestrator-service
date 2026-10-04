@@ -420,6 +420,31 @@ type Trip struct {
 	ApprovedAt *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
 	// PendingApprover holds the name of whoever voted/said "yes, book it" while no payer was
 	// designated yet. Once a payer is picked, this is used to finish the booking they already approved.
+	PendingApprover    string              `json:"pending_approver,omitempty" bson:"pending_approver,omitempty"`
+	HistoryStart       *time.Time          `json:"history_start,omitempty" bson:"history_start,omitempty"`
+	AskedOrigin        bool                `json:"asked_origin" bson:"asked_origin"`
+	AskedDates         bool                `json:"asked_dates" bson:"asked_dates"`
+	AskedPayer         bool                `json:"asked_payer" bson:"asked_payer"`
+	PayerName          string              `json:"payer_name,omitempty" bson:"payer_name,omitempty"`
+	Introduced         bool                `json:"introduced" bson:"introduced"`
+	SharedDashboard    bool                `json:"shared_dashboard" bson:"shared_dashboard"`
+	LastPoll           string              `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
+	Roster             []GroupMember       `json:"roster,omitempty" bson:"roster,omitempty"`
+	BudgetNote         string              `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
+	FlightsLocked      bool                `json:"flights_locked" bson:"flights_locked"`
+	PendingChange      *PendingChange      `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
+	PendingTripRequest *PendingTripRequest `json:"pending_trip_request,omitempty" bson:"pending_trip_request,omitempty"`
+	CreatedAt          time.Time           `json:"created_at" bson:"created_at"`
+	UpdatedAt          time.Time           `json:"updated_at" bson:"updated_at"`
+}
+
+// PendingTripRequest keeps an ambiguous request until the group chooses whether
+// to change the current trip or start a separate one.
+type PendingTripRequest struct {
+	Text       string    `json:"text" bson:"text"`
+	SenderName string    `json:"sender_name" bson:"sender_name"`
+	SentAt     time.Time `json:"sent_at" bson:"sent_at"`
+	Question   string    `json:"question" bson:"question"`
 	PendingApprover string         `json:"pending_approver,omitempty" bson:"pending_approver,omitempty"`
 	HistoryStart    *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
 	AskedOrigin     bool           `json:"asked_origin" bson:"asked_origin"`

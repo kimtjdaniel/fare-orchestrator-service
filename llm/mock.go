@@ -21,8 +21,8 @@ var (
 	noneConstrRe = regexp.MustCompile(`(?i)^\s*none\s*\.?\s*$`)
 )
 
-// MockLLM is a deterministic stand-in for Gemini. It only knows how to classify replies
-// (interpret_reply, via regex) offline; record_preferences/propose_options have no canned data
+// MockLLM is a deterministic stand-in for Gemini. It classifies replies and basic trip routing
+// via regex offline; record_preferences/propose_options have no canned data
 // and need a real GeminiLLM (MOCK_LLM=false).
 type MockLLM struct {
 	Calls []string
@@ -31,6 +31,33 @@ type MockLLM struct {
 func (m *MockLLM) Structured(ctx context.Context, system string, messages []Message, schema Schema) (map[string]any, error) {
 	m.Calls = append(m.Calls, schema.Name)
 	switch schema.Name {
+	case "route_trip":
+		var content string
+		if len(messages) > 0 {
+			content, _ = messages[len(messages)-1].Content.(string)
+		}
+		text := content
+		if index := strings.LastIndex(text, "Latest WhatsApp message from "); index >= 0 {
+			text = text[index:]
+			if index = strings.Index(text, "\n"); index >= 0 {
+				text = text[index+1:]
+			}
+		}
+		low := strings.ToLower(strings.TrimSpace(text))
+		pending := strings.Contains(content, `"pending_trip_request":{`)
+		if pending && (low == "new trip" || low == "a separate one" || low == "another session") {
+			return map[string]any{"action": "new_trip", "use_pending_request": true, "question": ""}, nil
+		}
+		if pending && (low == "continue this trip" || low == "change this one" || low == "replace the current destination") {
+			return map[string]any{"action": "continue", "use_pending_request": true, "question": ""}, nil
+		}
+		if routeNewTripRe.MatchString(text) && !strings.Contains(low, "instead") && !strings.Contains(low, "don't") {
+			return map[string]any{"action": "new_trip", "use_pending_request": false, "question": ""}, nil
+		}
+		if strings.HasPrefix(low, "what about ") {
+			return map[string]any{"action": "clarify", "use_pending_request": false, "question": "Should I change the current trip or start a separate trip? Reply 'continue this trip' or 'new trip'."}, nil
+		}
+		return map[string]any{"action": "continue", "use_pending_request": false, "question": ""}, nil
 	case "interpret_reply":
 		var text string
 		if len(messages) > 0 {
