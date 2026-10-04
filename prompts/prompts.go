@@ -116,7 +116,7 @@ Write a day-by-day trip itinerary as JSON for WhatsApp.
 Use the destination, dates, duration, tastes, and LOCKED FACTS already on the trip.
 Day 1 arrival city/airport must match the inbound flight in locked facts. Do not invent a different airport or fare.
 Do NOT invent prices. Do not write a brochure greeting ("thrilled to present"). Mix food, walking, one slower afternoon.
-Each day: a short title and 2-4 sentences covering morning, afternoon, evening — places, food, pace. Specific names when you know them.
+Each day: a short title, a body of 2-4 sentences, and an activities array of local timed activities. Each activity has time (24-hour HH:MM), title, and description. Cover 08:00 through 21:00 on full days, including meals, transit, and free time. Respect arrival and departure timing. Use specific places when known.
 intro: one warm sentence. You may @mention a chatter with their roster name if needed. Never WhatsApp IDs. No emoji, no markdown.`, botName, today)
 }
 
@@ -263,9 +263,10 @@ var DayItinerary = map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"title": map[string]any{"type": "string", "description": "e.g. Day 1 — landing and the old town"},
-						"body":  map[string]any{"type": "string", "description": "Morning / afternoon / evening in a few sentences."},
+                        "body": map[string]any{"type":"string","description":"Morning / afternoon / evening in a few sentences."},
+                        "activities": map[string]any{"type":"array","items":map[string]any{"type":"object","properties":map[string]any{"time":map[string]any{"type":"string","description":"Local 24-hour HH:MM"},"title":map[string]any{"type":"string"},"description":map[string]any{"type":"string"}},"required":[]string{"time","title","description"},"additionalProperties":false}},
 					},
-					"required":             []string{"title", "body"},
+					"required":             []string{"title", "body", "activities"},
 					"additionalProperties": false,
 				},
 			},

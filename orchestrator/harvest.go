@@ -16,8 +16,9 @@ var (
 	parenIATA = regexp.MustCompile(`\(([A-Za-z]{3})\)`)
 	monthDate = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*[–\-to]+\s*(\d{1,2})(?:st|nd|rd|th)?)?`)
 	dateSpanRe = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|through|until|–|-)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?`)
-	nightsRe  = regexp.MustCompile(`(?i)\b(\d{1,2})\s*-?\s*days?\b`)
+	nightsRe  = regexp.MustCompile(`(?i)\b(\d{1,2})\s*-?\s*(?:days?|nights?)\b`)
 	destToRe  = regexp.MustCompile(`(?i)\b(?:destination(?:\s+to)?|going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
+	tripPlaceRe = regexp.MustCompile(`(?i)\b(?:plan|book|arrange)\s+(?:a\s+|an\s+)?(?:\d{1,2}\s*-?\s*(?:night|day)s?\s+)?([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+trip\b`)
 	insteadToRe = regexp.MustCompile(`(?i)\b(?:to|for)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+instead\b`)
 	budgetRe  = regexp.MustCompile(`(?i)(?:c\$|cad\s*\$?|\$)\s*([\d,]+)|budget[^\d]{0,12}([\d,]+)`)
 	monthOnlyRe = regexp.MustCompile(`(?i)\b(?:next\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`)
@@ -258,6 +259,11 @@ func fillDateRange(dates []string) []string {
 }
 
 func parseDestination(text string) string {
+	if m := tripPlaceRe.FindStringSubmatch(text); len(m) == 2 {
+		if dest := cleanPlaceName(m[1]); dest != "" {
+			return dest
+		}
+	}
 	low := strings.ToLower(text)
 	if strings.Contains(low, "italy") || strings.Contains(low, "italia") {
 		if strings.Contains(low, "south") {

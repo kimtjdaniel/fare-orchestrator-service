@@ -54,16 +54,16 @@ const (
 // CONTRACTS.md is flat (group_id, sender_id). Older robot builds sent nested
 // chat/sender objects; UnmarshalJSON accepts both.
 type IncomingMessage struct {
-	GroupID    string `json:"group_id"`
-	GroupName  string `json:"group_name"`
-	SenderID   string `json:"sender_id"`
-	SenderName string `json:"sender_name"`
-	Participants []GroupMember `json:"participants,omitempty"`
-	Text         string        `json:"text"`
-	Tagged       bool          `json:"tagged"`    // was the bot @mentioned?
-	Timestamp    int64         `json:"timestamp"` // unix seconds
-	MessageID    string        `json:"message_id,omitempty"`
-	AgentID      string        `json:"agent_id,omitempty"`
+	GroupID      string         `json:"group_id"`
+	GroupName    string         `json:"group_name"`
+	SenderID     string         `json:"sender_id"`
+	SenderName   string         `json:"sender_name"`
+	Participants []GroupMember  `json:"participants,omitempty"`
+	Text         string         `json:"text"`
+	Tagged       bool           `json:"tagged"`    // was the bot @mentioned?
+	Timestamp    int64          `json:"timestamp"` // unix seconds
+	MessageID    string         `json:"message_id,omitempty"`
+	AgentID      string         `json:"agent_id,omitempty"`
 	Quoted       *QuotedMessage `json:"quoted,omitempty"`
 }
 
@@ -274,20 +274,20 @@ type Trip struct {
 	Flights        []Flight        `json:"flights,omitempty" bson:"flights,omitempty"`
 	Accommodations []Accommodation `json:"accommodations,omitempty" bson:"accommodations,omitempty"`
 
-	Itinerary    map[string]any `json:"itinerary,omitempty" bson:"itinerary,omitempty"`
-	ApprovedBy   string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
-	ApprovedAt   *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
-	HistoryStart *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
-	AskedOrigin      bool   `json:"asked_origin" bson:"asked_origin"`
-	AskedDates       bool   `json:"asked_dates" bson:"asked_dates"`
-	SharedDashboard  bool   `json:"shared_dashboard" bson:"shared_dashboard"`
-	LastPoll         string `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
-	Roster           []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`
-	BudgetNote       string         `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
-	FlightsLocked    bool           `json:"flights_locked" bson:"flights_locked"`
-	PendingChange    *PendingChange `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
-	CreatedAt        time.Time `json:"created_at" bson:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at" bson:"updated_at"`
+	Itinerary       map[string]any `json:"itinerary,omitempty" bson:"itinerary,omitempty"`
+	ApprovedBy      string         `json:"approved_by,omitempty" bson:"approved_by,omitempty"`
+	ApprovedAt      *time.Time     `json:"approved_at,omitempty" bson:"approved_at,omitempty"`
+	HistoryStart    *time.Time     `json:"history_start,omitempty" bson:"history_start,omitempty"`
+	AskedOrigin     bool           `json:"asked_origin" bson:"asked_origin"`
+	AskedDates      bool           `json:"asked_dates" bson:"asked_dates"`
+	SharedDashboard bool           `json:"shared_dashboard" bson:"shared_dashboard"`
+	LastPoll        string         `json:"last_poll,omitempty" bson:"last_poll,omitempty"`
+	Roster          []GroupMember  `json:"roster,omitempty" bson:"roster,omitempty"`
+	BudgetNote      string         `json:"budget_note,omitempty" bson:"budget_note,omitempty"`
+	FlightsLocked   bool           `json:"flights_locked" bson:"flights_locked"`
+	PendingChange   *PendingChange `json:"pending_change,omitempty" bson:"pending_change,omitempty"`
+	CreatedAt       time.Time      `json:"created_at" bson:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at" bson:"updated_at"`
 }
 
 // PendingChange is a proposed update to already-set trip details. It only applies
@@ -308,16 +308,16 @@ type PendingChange struct {
 
 // PollVote is posted by the WhatsApp robot when someone taps a poll option.
 type PollVote struct {
-	Event            string   `json:"event"`
-	GroupID          string   `json:"group_id"`
-	GroupName        string   `json:"group_name"`
-	VoterID          string   `json:"voter_id"`
-	VoterName        string   `json:"voter_name"`
-	PollMessageID    string   `json:"poll_message_id"`
-	PollName         string   `json:"poll_name"`
-	SelectedOptions  []string `json:"selected_options"`
-	Timestamp        int64    `json:"timestamp"`
-	AgentID          string   `json:"agent_id,omitempty"`
+	Event           string   `json:"event"`
+	GroupID         string   `json:"group_id"`
+	GroupName       string   `json:"group_name"`
+	VoterID         string   `json:"voter_id"`
+	VoterName       string   `json:"voter_name"`
+	PollMessageID   string   `json:"poll_message_id"`
+	PollName        string   `json:"poll_name"`
+	SelectedOptions []string `json:"selected_options"`
+	Timestamp       int64    `json:"timestamp"`
+	AgentID         string   `json:"agent_id,omitempty"`
 }
 
 // ChosenOption reconstructs an Option-shaped view of the group's pick from the trip's own flat
@@ -346,15 +346,19 @@ type WhatsAppSession struct {
 // ---------- travel tool results (P3 / P4 return these) ----------
 
 type FlightOffer struct {
-	OfferID     string  `json:"offer_id"`
-	Origin      string  `json:"origin"`
-	Destination string  `json:"destination"`
-	DepartDate  string  `json:"depart_date"`
-	ReturnDate  string  `json:"return_date"`
-	Airline     string  `json:"airline"`
-	Price       float64 `json:"price"`
-	Currency    string  `json:"currency"`
-	Summary     string  `json:"summary"` // "AC 554 dep 08:10, arr 11:35"
+	Duration      string  `json:"duration,omitempty"`
+	Stops         int     `json:"stops"`
+	DepartureTime string  `json:"departure_time,omitempty"`
+	ArrivalTime   string  `json:"arrival_time,omitempty"`
+	OfferID       string  `json:"offer_id"`
+	Origin        string  `json:"origin"`
+	Destination   string  `json:"destination"`
+	DepartDate    string  `json:"depart_date"`
+	ReturnDate    string  `json:"return_date"`
+	Airline       string  `json:"airline"`
+	Price         float64 `json:"price"`
+	Currency      string  `json:"currency"`
+	Summary       string  `json:"summary"` // "AC 554 dep 08:10, arr 11:35"
 }
 
 type HotelOffer struct {

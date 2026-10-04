@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"fare-brain/config"
+	"fare-brain/dashboard"
 	"fare-brain/formatting"
 	"fare-brain/llm"
 	"fare-brain/messaging"
@@ -40,8 +41,8 @@ var (
 	approveOnlyRe = regexp.MustCompile(`(?i)^\s*(✅|👍|yes|yep|book it|approve)\s*!*\s*$`)
 	rejectOnlyRe  = regexp.MustCompile(`(?i)^\s*(❌|👎|no|nope)\s*!*\s*$`)
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
-	proxyPrefRe = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
-	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
+	proxyPrefRe    = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
+	prefFactRe     = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
 	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|things to do|what (should|can|do) we do|where to eat|restaurant|neighbourhood|neighborhood|hidden gem|full \d+\s*-?\s*days?|advise|recommend)`)
 	hotelAskRe     = regexp.MustCompile(`(?i)(\bhotels?\b|\bthe stay\b|where (?:are|we'?re|will) we stay|\baccommodat|\bthe room\b|show (?:me |us )?(?:the )?(?:hotel|stay)|\b(?:pics?|photos?|pictures?|shots?)\b)`)
 	sendItRe       = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:pic|photo|picture|shot)s?)|(?:send|show)(?:\s+\w+){0,3}\s+(?:pic|photo|picture|shot)s?)\b`)
@@ -51,6 +52,7 @@ var (
 )
 
 type Brain struct {
+	Dashboard *dashboard.Manager
 	Store     store.Store
 	LLM       llm.LLM
 	Messenger messaging.Messenger
@@ -317,6 +319,9 @@ func (b *Brain) Handle(ctx context.Context, m models.IncomingMessage) {
 	defer lock.Unlock()
 
 	if err := b.handle(ctx, m); err != nil {
+		if b.Dashboard != nil {
+			_ = b.Dashboard.Emit(ctx, m.GroupID, "session.failed", map[string]any{"message": "Trip planning could not finish. Please try again in the group chat."})
+		}
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
 		if sayErr := b.say(ctx, m.GroupID, "Something broke on my end. Try that again.", nil); sayErr != nil {
 			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
@@ -360,8 +365,8 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	}
 
 	_, _ = b.Store.SaveWhatsAppSession(ctx, "group:"+m.GroupID, map[string]any{
-		"trip_id": m.GroupID,
-		"group":   m.GroupName,
+		"trip_id":  m.GroupID,
+		"group":    m.GroupName,
 		"agent_id": m.AgentID,
 	})
 
@@ -375,9 +380,6 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 			return err
 		}
 		b.rememberRoster(ctx, trip, m)
-		if m.Tagged && looksLikeItineraryAsk(m.Text) {
-			return b.writeAdvisorItinerary(ctx, trip, m)
-		}
 		if !m.Tagged && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants) {
 			return nil
 		}
@@ -453,7 +455,7 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	switch trip.State {
 	case models.Collecting:
-		if m.Tagged && looksLikeItineraryAsk(m.Text) {
+		if m.Tagged && looksLikeItineraryAsk(m.Text) && tripDestination(trip) != "" {
 			return b.writeAdvisorItinerary(ctx, trip, m)
 		}
 		enough := enoughToPlan(trip.Participants)
@@ -479,6 +481,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 // ------------------------------------------------------------------ stage: plan
 
 func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
+	}
 	history, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 1000, true)
 	if err != nil {
 		return err
@@ -887,14 +894,14 @@ func tripHasLockedFares(trip *models.Trip) bool {
 
 func tripFacts(trip *models.Trip) map[string]any {
 	facts := map[string]any{
-		"state":                trip.State,
-		"origin":               trip.Origin,
-		"destination":          trip.Destination,
-		"destination_airport":  trip.DestinationAirport,
-		"dates":                []string{trip.EmbarkingDate, trip.ReturningDate},
-		"cost_per_person_cad":  trip.CostPerPerson,
-		"flights_locked":       trip.FlightsLocked,
-		"duration_nights":      trip.DurationNights,
+		"state":               trip.State,
+		"origin":              trip.Origin,
+		"destination":         trip.Destination,
+		"destination_airport": trip.DestinationAirport,
+		"dates":               []string{trip.EmbarkingDate, trip.ReturningDate},
+		"cost_per_person_cad": trip.CostPerPerson,
+		"flights_locked":      trip.FlightsLocked,
+		"duration_nights":     trip.DurationNights,
 	}
 	if trip.Itinerary != nil {
 		facts["locked"] = map[string]any{
@@ -1073,24 +1080,40 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		originAirport = people[0].OriginAirport
 	}
 
-	offers, err := tools.SearchFlights(ctx, b.Config, originAirport, option.DestinationAirport, option.EmbarkingDate, option.ReturningDate)
-	if err != nil || len(offers) == 0 {
-		if _, sErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); sErr != nil {
-			return sErr
+	offers, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
+	if flightErr != nil || len(offers) == 0 || hotelErr != nil || len(hotels) == 0 {
+		message := "No matching flight and hotel combination was found. Choose another option in the group chat."
+		if flightErr != nil || hotelErr != nil {
+			message = "A travel search could not finish. Please try another option in the group chat."
 		}
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("No luck on flights to %s from %s. Want to try another option?",
-			option.Destination, originAirport), nil)
+		if err := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); err != nil {
+			return err
+		}
+		if _, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); err != nil {
+			return err
+		}
+		return b.say(ctx, trip.GroupID, message, nil)
+	}
+	if err := b.dashboardEvent(ctx, trip, "planning.started", map[string]any{"message": "Building your itinerary"}); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "running", "Comparing flight prices"); err != nil {
+		return err
 	}
 	offer := offers[0]
-
-	hotels, err := tools.SearchHotels(ctx, b.Config, option.Destination, option.EmbarkingDate, option.ReturningDate, len(people), nil)
-	if err != nil || len(hotels) == 0 {
-		if _, sErr := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil); sErr != nil {
-			return sErr
-		}
-		return b.say(ctx, trip.GroupID, fmt.Sprintf("Couldn't find a hotel that works in %s. Want another option?", option.Destination), nil)
+	if err := b.dashboardTask(ctx, trip, "flight-prices", "completed", "Selected the lowest displayed flight fare"); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "hotel-location", "running", "Choosing a hotel in your destination"); err != nil {
+		return err
 	}
 	hotel := hotels[0]
+	if err := b.dashboardTask(ctx, trip, "hotel-location", "completed", "Selected a stay from the destination shortlist"); err != nil {
+		return err
+	}
+	if err := b.dashboardTask(ctx, trip, "group-budget", "running", "Calculating the group’s costs"); err != nil {
+		return err
+	}
 
 	names := make([]string, len(people))
 	payer := "the group"
@@ -1150,6 +1173,9 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 		"flights_locked": true,
 	})
 	if err != nil {
+		return err
+	}
+	if err := b.finishDashboard(ctx, trip, offer, hotel); err != nil {
 		return err
 	}
 	chosen := trip.ChosenOption()

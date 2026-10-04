@@ -38,7 +38,12 @@ type Settings struct {
 	HotelCheckoutURL string
 	SkyvernMaxSteps  int
 
-	DashboardURL string
+	DashboardURL         string
+	FlightServiceURL     string
+	HotelServiceURL      string
+	FlightServiceWSURL   string
+	HotelServiceWSURL    string
+	SearchFrontendOrigin string
 }
 
 func boolEnv(name string, def bool) bool {
@@ -129,6 +134,11 @@ func Load() *Settings {
 		HotelCheckoutURL: getenv("HOTEL_CHECKOUT_URL", "https://example-fake-hotel.vercel.app"),
 		SkyvernMaxSteps:  intEnv("SKYVERN_MAX_STEPS", 25),
 
-		DashboardURL: getenv("DASHBOARD_URL", ""),
+		DashboardURL:         getenv("DASHBOARD_URL", ""),
+		FlightServiceURL:     getenv("FLIGHT_SERVICE_URL", "https://oi4ykhnpbgrgeedjtljdjdg6qe0luuug.lambda-url.us-west-2.on.aws/"),
+		HotelServiceURL:      getenv("HOTEL_SERVICE_URL", "https://qhz6talpesw4nfnbipkxnxxsq40ivfah.lambda-url.us-west-2.on.aws/"),
+		FlightServiceWSURL:   getenv("FLIGHT_SERVICE_WS_URL", ""),
+		HotelServiceWSURL:    getenv("HOTEL_SERVICE_WS_URL", ""),
+		SearchFrontendOrigin: getenv("SEARCH_FRONTEND_ORIGIN", "http://localhost:3000"),
 	}
 }

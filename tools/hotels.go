@@ -25,9 +25,35 @@ func SearchHotels(ctx context.Context, cfg *config.Settings, city, checkIn, chec
 		nights = 1
 	}
 	if !cfg.MockTravel {
-		// TODO(P3): Duffel Stays (or Amadeus) search. Set CheckoutURL to P4's fake checkout page
-		// with the hotel + dates in the query string, so Skyvern books on a page we control.
-		return nil, fmt.Errorf("real hotel search not wired yet (set MOCK_TRAVEL=true)")
+		if guests < 1 {
+			guests = 1
+		}
+		request := map[string]any{"session_id": searchSession(ctx), "destination": city, "check_in": checkIn, "check_out": checkOut, "adults": guests, "rooms": 1, "currency": "CAD"}
+		if maxPricePerNight != nil {
+			request["budget"] = *maxPricePerNight * float64(nights)
+		}
+		result, err := runSearchService(ctx, cfg, "hotel", request)
+		if err != nil {
+			return nil, err
+		}
+		rows, ok := result["hotels"].([]any)
+		if !ok {
+			return nil, fmt.Errorf("hotel service returned no hotel list")
+		}
+		offers := make([]models.HotelOffer, 0, len(rows))
+		for i, raw := range rows {
+			row, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			var rating *float64
+			if n, ok := row["rating"].(float64); ok {
+				rating = &n
+			}
+			offers = append(offers, models.HotelOffer{OfferID: fmt.Sprintf("%s-%d", searchRecordText(result["search_id"]), i), Name: searchRecordText(row["name"]), City: city, CheckIn: checkIn, CheckOut: checkOut, PricePerNight: searchRecordNumber(row["total_price"]) / float64(nights), TotalPrice: searchRecordNumber(row["total_price"]), Currency: searchRecordText(row["currency"]), Rating: rating, CheckoutURL: searchRecordText(row["url"])})
+		}
+		sort.Slice(offers, func(i, j int) bool { return offers[i].TotalPrice < offers[j].TotalPrice })
+		return offers, nil
 	}
 
 	type seed struct {

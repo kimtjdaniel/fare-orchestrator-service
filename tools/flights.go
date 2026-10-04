@@ -20,10 +20,24 @@ func SearchFlights(ctx context.Context, cfg *config.Settings, origin, destinatio
 	if cfg.MockTravel {
 		return mockSearchFlights(origin, destination, departDate, returnDate), nil
 	}
-	// TODO(P3): Duffel test mode — create an offer request with two slices (origin->destination
-	// on departDate, back on returnDate), map each offer to a models.FlightOffer. Cache the demo
-	// route's response to disk so stage demos don't hit the API.
-	return nil, fmt.Errorf("real flight search not wired yet (set MOCK_TRAVEL=true)")
+	result, err := runSearchService(ctx, cfg, "flight", map[string]any{"session_id": searchSession(ctx), "origins": []string{origin}, "destination": destination, "departure_date": departDate, "return_date": returnDate, "trip_type": "round_trip", "currency": "CAD"})
+	if err != nil {
+		return nil, err
+	}
+	rows, ok := result["flights"].([]any)
+	if !ok {
+		return nil, fmt.Errorf("flight service returned no flight list")
+	}
+	offers := make([]models.FlightOffer, 0, len(rows))
+	for i, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		offers = append(offers, models.FlightOffer{OfferID: fmt.Sprintf("%s-%d", searchRecordText(result["search_id"]), i), Origin: searchRecordText(row["origin"]), Destination: searchRecordText(row["destination"]), DepartDate: departDate, ReturnDate: returnDate, Airline: searchRecordText(row["airline"]), Price: searchRecordNumber(row["price"]), Currency: searchRecordText(row["currency"]), Summary: fmt.Sprintf("%s → %s · %s · %.0f stops", searchRecordText(row["outbound_departure_time_text"]), searchRecordText(row["outbound_arrival_time_text"]), searchRecordText(row["outbound_duration_text"]), searchRecordNumber(row["outbound_stops"])), Duration: searchRecordText(row["outbound_duration_text"]), Stops: int(searchRecordNumber(row["outbound_stops"])), DepartureTime: searchRecordText(row["outbound_departure_time_text"]), ArrivalTime: searchRecordText(row["outbound_arrival_time_text"])})
+	}
+	sort.Slice(offers, func(i, j int) bool { return offers[i].Price < offers[j].Price })
+	return offers, nil
 }
 
 // BookFlight books one passenger on an offer from SearchFlights. Must only be called after approval.

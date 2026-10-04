@@ -5,6 +5,7 @@ package formatting
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"fare-brain/models"
@@ -50,7 +51,7 @@ func Dates(startStr, endStr string) string {
 }
 
 func DashboardLink(dashboardURL, tripID string) string {
-	return fmt.Sprintf("%s/trip/%s", dashboardURL, tripID)
+	return fmt.Sprintf("%s/dashboard/%s", strings.TrimRight(dashboardURL, "/"), url.PathEscape(tripID))
 }
 
 func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL string) string {
