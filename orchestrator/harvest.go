@@ -36,6 +36,8 @@ var cityAirport = map[string]string{
 	"vancouver": "YVR", "toronto": "YYZ", "calgary": "YYC", "edmonton": "YEG",
 	"montreal": "YUL", "ottawa": "YOW", "winnipeg": "YWG", "halifax": "YHZ",
 	"victoria": "YYJ", "kelowna": "YLW", "seattle": "SEA", "portland": "PDX",
+	"london": "LHR", "paris": "CDG", "tokyo": "NRT", "japan": "NRT", "osaka": "KIX",
+	"rome": "FCO", "naples": "NAP", "barcelona": "BCN", "madrid": "MAD", "lisbon": "LIS",
 }
 
 type harvestedFacts struct {

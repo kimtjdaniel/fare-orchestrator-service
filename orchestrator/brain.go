@@ -539,9 +539,6 @@ func (b *Brain) handleLocked(ctx context.Context, m models.IncomingMessage) {
 	ctx = messaging.WithReplyTo(ctx, m.MessageID)
 
 	if err := b.handle(ctx, m); err != nil {
-		if b.Dashboard != nil {
-			_ = b.Dashboard.Emit(ctx, m.GroupID, "session.failed", map[string]any{"message": "Trip planning could not finish. Please try again in the group chat."})
-		}
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
 		if sayErr := b.say(ctx, m.GroupID, geminiFailTalk(err), nil); sayErr != nil {
 			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
@@ -2054,8 +2051,10 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 	offers, hotels, flightErr, hotelErr := b.searchDashboard(ctx, trip, originAirport, option)
 	if flightErr != nil || len(offers) == 0 || hotelErr != nil || len(hotels) == 0 {
 		message := "No matching flight and hotel combination was found. Choose another option in the group chat."
-		if flightErr != nil || hotelErr != nil {
-			message = "A travel search could not finish. Please try another option in the group chat."
+		if flightErr != nil {
+			message = flightErr.Error()
+		} else if hotelErr != nil {
+			message = hotelErr.Error()
 		}
 		if err := b.dashboardEvent(ctx, trip, "session.failed", map[string]any{"message": message}); err != nil {
 			return err
@@ -2207,6 +2206,22 @@ func destAirportCandidates(airport, dest string) []string {
 	}
 	if strings.Contains(blob, "lisbon") || airport == "LIS" {
 		add("LIS")
+	}
+	if strings.Contains(blob, "japan") || strings.Contains(blob, "tokyo") {
+		add("NRT")
+		add("HND")
+	}
+	if strings.Contains(blob, "london") {
+		add("LHR")
+		add("LGW")
+	}
+	if strings.Contains(blob, "paris") {
+		add("CDG")
+	}
+	for city, code := range cityAirport {
+		if strings.Contains(blob, city) {
+			add(code)
+		}
 	}
 	if strings.Contains(blob, "ital") || strings.Contains(blob, "amalfi") || strings.Contains(blob, "naples") || strings.Contains(blob, "puglia") || airport == "NAP" || airport == "BRI" {
 		add("NAP")

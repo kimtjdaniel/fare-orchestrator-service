@@ -8,6 +8,7 @@ import (
 	"fare-brain/prompts"
 	"fare-brain/tools"
 	"fmt"
+	"strings"
 )
 
 func (b *Brain) dashboardEvent(ctx context.Context, t *models.Trip, kind string, payload map[string]any) error {
@@ -135,6 +136,11 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 	}
 	go func() {
 		defer close(flightDone)
+		if !validIATA(origin) || !validIATA(destAP) || !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
+			flightErr = fmt.Errorf("flight search needs airport codes and dates (origin %q, destination %q, %s to %s)", origin, destAP, option.EmbarkingDate, option.ReturningDate)
+			_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": flightErr.Error()})
+			return
+		}
 		if err := b.dashboardEvent(ctx, t, "flight_search.started", map[string]any{"message": "Flight agent started"}); err != nil {
 			flightErr = err
 			return
@@ -164,4 +170,73 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 	<-flightDone
 	<-hotelDone
 	return flights, hotels, flightErr, hotelErr
+}
+
+func validIATA(code string) bool {
+	if len(code) != 3 {
+		return false
+	}
+	for _, r := range code {
+		if r < 'A' || r > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
+// RetryFlightSearch runs the flight agent again for the group's current trip.
+func (b *Brain) RetryFlightSearch(ctx context.Context, groupID string) error {
+	trip, err := b.Store.GetTrip(ctx, groupID)
+	if err != nil || trip == nil {
+		return &DashboardError{Status: 404, Msg: "trip not found"}
+	}
+	option := trip.ChosenOption()
+	if option == nil && len(trip.Options) > 0 {
+		option = &trip.Options[0]
+	}
+	if option == nil {
+		return &DashboardError{Status: 400, Msg: "There is no destination to search yet."}
+	}
+	origin := originAirportCode(trip.Origin, trip.Participants)
+	dest := option.DestinationAirport
+	if cands := destAirportCandidates(dest, option.Destination); len(cands) > 0 {
+		dest = cands[0]
+	} else if cands := destAirportCandidates("", trip.Destination); len(cands) > 0 {
+		dest = cands[0]
+	}
+	if !validIATA(origin) || !validIATA(dest) || !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
+		msg := fmt.Sprintf("Flight search needs airport codes and dates. Origin is %q, destination is %q, dates are %s to %s.", blank(origin), blank(dest), blank(option.EmbarkingDate), blank(option.ReturningDate))
+		_ = b.dashboardEvent(ctx, trip, "flight_search.failed", map[string]any{"message": msg})
+		return &DashboardError{Status: 400, Msg: msg}
+	}
+	go b.runFlightSearch(context.Background(), trip, origin, dest, option.EmbarkingDate, option.ReturningDate)
+	return nil
+}
+
+func blank(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "missing"
+	}
+	return s
+}
+
+func (b *Brain) runFlightSearch(ctx context.Context, t *models.Trip, origin, dest, depart, ret string) {
+	if b.Dashboard != nil {
+		if sessionID, err := b.Dashboard.Begin(ctx, t); err == nil {
+			ctx = tools.WithSearchEvents(ctx, sessionID, func(kind string, payload map[string]any) { _ = b.dashboardEvent(ctx, t, kind, payload) })
+		}
+	}
+	if err := b.dashboardEvent(ctx, t, "flight_search.started", map[string]any{"message": "Retrying the flight search."}); err != nil {
+		return
+	}
+	flights, err := tools.SearchFlights(ctx, b.Config, origin, dest, depart, ret)
+	if err != nil {
+		_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": err.Error()})
+		return
+	}
+	if len(flights) == 0 {
+		_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": "The flight search finished without any fares."})
+		return
+	}
+	_ = b.dashboardEvent(ctx, t, "flight_search.completed", map[string]any{"flights": dashboardFlights(flights), "message": fmt.Sprintf("Found %d flight options", len(flights))})
 }
