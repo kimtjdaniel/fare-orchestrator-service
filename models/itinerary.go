@@ -80,6 +80,13 @@ func ScheduleItinerary(trip *Trip, itinerary map[string]any, fresh bool) map[str
 	plan["flightReason"] = SelectedTravelReason(out, "flight")
 	plan["hotelReason"] = SelectedTravelReason(out, "hotel")
 	plan["selectionReason"] = out["selection_reason"]
+	proposal, _ := out["pending_activity_replacement"].(map[string]any)
+	revision, _ := proposal["revision"].(float64)
+	if revision != float64(trip.ItineraryRevision) || !ScheduleEditable(trip) {
+		delete(out, "pending_activity_replacement")
+		proposal = nil
+	}
+	plan["pendingActivityReplacement"] = proposal
 	return out
 }
 

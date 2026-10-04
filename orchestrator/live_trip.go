@@ -87,9 +87,15 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 	if err != nil || trip == nil {
 		return nil, &DashboardError{Status: 404, Msg: "trip not found"}
 	}
-	if action == "update_activity" || action == "undo_activity_edit" {
+	if action == "update_activity" || action == "undo_activity_edit" || action == "propose_activity_replacement" || action == "accept_activity_replacement" || action == "reject_activity_replacement" {
 		body["action"] = action
-		updated, message, err := b.activityAction(ctx, trip, body)
+		var updated *models.Trip
+		var message string
+		if action == "update_activity" || action == "undo_activity_edit" {
+			updated, message, err = b.activityAction(ctx, trip, body)
+		} else {
+			updated, message, err = b.activityReplacementAction(ctx, trip, body)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -281,22 +287,23 @@ func (b *Brain) dashboardPayload(ctx context.Context, trip *models.Trip) (map[st
 	people := dashPeople(trip)
 	editable := models.ScheduleEditable(trip)
 	return map[string]any{
-		"group_id":               trip.GroupID,
-		"current_session_id":     currentID,
-		"itinerary_revision":     trip.ItineraryRevision,
-		"can_undo_activity_edit": itin["activity_edit_undo"] != nil,
-		"flight_reason":          models.SelectedTravelReason(itin, "flight"),
-		"hotel_reason":           models.SelectedTravelReason(itin, "hotel"),
-		"group_name":             trip.GroupName,
-		"state":                  trip.State,
-		"editable":               editable,
-		"destination":            tripDestination(trip),
-		"origin":                 trip.Origin,
-		"dates":                  formatting.Dates(trip.EmbarkingDate, trip.ReturningDate),
-		"nights":                 trip.DurationNights,
-		"budget_note":            trip.BudgetNote,
-		"payer_name":             trip.PayerName,
-		"updated_at":             trip.UpdatedAt,
+		"group_id":                     trip.GroupID,
+		"current_session_id":           currentID,
+		"itinerary_revision":           trip.ItineraryRevision,
+		"can_undo_activity_edit":       itin["activity_edit_undo"] != nil,
+		"pending_activity_replacement": itin["pending_activity_replacement"],
+		"flight_reason":                models.SelectedTravelReason(itin, "flight"),
+		"hotel_reason":                 models.SelectedTravelReason(itin, "hotel"),
+		"group_name":                   trip.GroupName,
+		"state":                        trip.State,
+		"editable":                     editable,
+		"destination":                  tripDestination(trip),
+		"origin":                       trip.Origin,
+		"dates":                        formatting.Dates(trip.EmbarkingDate, trip.ReturningDate),
+		"nights":                       trip.DurationNights,
+		"budget_note":                  trip.BudgetNote,
+		"payer_name":                   trip.PayerName,
+		"updated_at":                   trip.UpdatedAt,
 		"spend": map[string]any{
 			"flight_each":   spend.FlightEach,
 			"hotel_group":   spend.HotelGroup,
