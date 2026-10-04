@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -102,6 +103,12 @@ func main() {
 	mux.HandleFunc("POST /telegram/webhook", telegramWebhookHandler(cfg, brain))
 	mux.HandleFunc("GET /trips/{id}", getTripHandler(st))
 	mux.HandleFunc("GET /groups/{gid}/trip", getGroupTripHandler(st))
+	mux.HandleFunc("GET /groups/{gid}/events", groupEventsHandler(brain))
+	mux.HandleFunc("GET /groups/{gid}/sessions", listGroupSessionsHandler(brain))
+	mux.HandleFunc("GET /groups/{gid}/sessions/{sid}", getGroupSessionHandler(brain))
+	mux.HandleFunc("GET /dashboard/trips", listDashboardTripsHandler(brain))
+	mux.HandleFunc("GET /dashboard/trips/{gid}", getDashboardTripHandler(brain))
+	mux.HandleFunc("POST /dashboard/trips/{gid}", postDashboardActHandler(brain))
 	mux.HandleFunc("PUT /sessions/whatsapp", putWhatsAppSessionHandler(st))
 	mux.HandleFunc("GET /sessions/whatsapp", getWhatsAppSessionHandler(st))
 
@@ -365,6 +372,65 @@ func telegramWebhookHandler(cfg *config.Settings, brain *orchestrator.Brain) htt
 }
 
 // ------------------------------------------------------------------ dashboard reads
+
+func writeDash(w http.ResponseWriter, err error, ok any) {
+	var dash *orchestrator.DashboardError
+	if errors.As(err, &dash) {
+		writeJSON(w, dash.Status, map[string]string{"error": dash.Msg})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, ok)
+}
+
+func groupEventsHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		brain.ServeGroupEvents(w, r, r.PathValue("gid"))
+	}
+}
+
+func listGroupSessionsHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rows, err := brain.ListGroupSnapshots(r.Context(), r.PathValue("gid"))
+		writeDash(w, err, rows)
+	}
+}
+
+func getGroupSessionHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		view, err := brain.GetSessionSnapshot(r.Context(), r.PathValue("gid"), r.PathValue("sid"))
+		writeDash(w, err, view)
+	}
+}
+
+func listDashboardTripsHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rows, err := brain.ListDashboardTrips(r.Context())
+		writeDash(w, err, rows)
+	}
+}
+
+func getDashboardTripHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		view, err := brain.DashboardView(r.Context(), r.PathValue("gid"))
+		writeDash(w, err, view)
+	}
+}
+
+func postDashboardActHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		view, err := brain.DashboardAct(r.Context(), r.PathValue("gid"), body)
+		writeDash(w, err, view)
+	}
+}
 
 func getTripHandler(st store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

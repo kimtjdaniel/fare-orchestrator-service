@@ -29,6 +29,7 @@ type Store interface {
 	// CreateTrip gets-or-creates the group's singleton trip document.
 	CreateTrip(ctx context.Context, groupID, groupName string) (*models.Trip, error)
 	GetTrip(ctx context.Context, tripID string) (*models.Trip, error)
+	ListTrips(ctx context.Context) ([]*models.Trip, error)
 	// ResetTrip reuses the same document for a new trip cycle: clears the prior round's fields and
 	// moves back to Collecting, so old chat history doesn't leak into the new extraction.
 	ResetTrip(ctx context.Context, tripID, groupName string) (*models.Trip, error)

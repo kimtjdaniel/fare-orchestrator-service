@@ -82,6 +82,17 @@ func (s *MemoryStore) CreateTrip(ctx context.Context, groupID, groupName string)
 	return &cp, nil
 }
 
+func (s *MemoryStore) ListTrips(ctx context.Context) ([]*models.Trip, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*models.Trip, 0, len(s.trips))
+	for _, t := range s.trips {
+		cp := *t
+		out = append(out, &cp)
+	}
+	return out, nil
+}
+
 func (s *MemoryStore) GetTrip(ctx context.Context, tripID string) (*models.Trip, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -191,6 +191,10 @@ type Participant struct {
 	OriginAirport        string `json:"origin_airport,omitempty" bson:"origin_airport,omitempty"` // IATA
 	Origin               string `json:"origin,omitempty" bson:"origin,omitempty"`                 // schema: same origin for now; city or IATA
 
+	LegalName            string `json:"legal_name,omitempty" bson:"legal_name,omitempty"`
+	DateOfBirth          string `json:"date_of_birth,omitempty" bson:"date_of_birth,omitempty"` // YYYY-MM-DD
+	PassportNumber       string `json:"passport_number,omitempty" bson:"passport_number,omitempty"`
+
 	GeneralPreferences       GeneralPreferences       `json:"general_preferences" bson:"general_preferences"`
 	FlightPreferences        FlightPreferences        `json:"flight_preferences" bson:"flight_preferences"`
 	AccommodationPreferences AccommodationPreferences `json:"accommodation_preferences" bson:"accommodation_preferences"`
