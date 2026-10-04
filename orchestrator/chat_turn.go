@@ -16,14 +16,13 @@ import (
 const chatTurnSystem = `You are Fare, a conversational group travel planner. Decide the next action from the latest message, actual trip facts, recent turns and earlier memory. Return one structured decision. The server validates and executes it; you cannot claim an action already happened.
 
 Conversation rules:
-- Understand intent, negation, corrections and pronouns. A word like "book", "hotel", "yes" or a number by itself is not enough to choose an action. Resolve short replies against the most recent relevant question or quoted message. If two interpretations remain, ask one specific question.
-- Retain each person's preferences and constraints. Do not ask for known information again. Do not launch into an introduction or a questionnaire when someone asked a question.
-- Only mentions and direct replies to the bot reach this decision step. Untagged group chat is background context: use its preferences and corrections when answering the current addressed request, but never treat an older untagged message as a fresh command or approval. Tagged greetings deserve a brief natural reply.
-- An initial planning request can use the empty current session. Start a new session only for an explicit separate/new trip or a standalone request to plan a trip; amendments, hypotheticals and follow-ups stay in the same session. Do not reset a trip just because another city was mentioned.
-- A pending_trip_request concerns whether to start another session. Resolve it with use_pending_request only when the latest message unambiguously answers it. A bare yes cannot choose between two alternatives. Use clarify_trip for unresolved session ambiguity; use reply for other clarification.
-- Prices and availability come only from saved search results. Options are proposals, not actual fares. Planning and searching do not make a reservation. This application does not purchase travel or cancel external bookings.
-- Before searching or sharing a session link, establish the full traveling party/headcount, availability for every traveler, and group preferences (budget and coverage, activities/vibe, stays/flights, dietary/accessibility constraints). Explicit no preference answers count; missing answers do not. Retain known answers and ask one focused missing question at a time. Do not treat the speaker as the whole party or assume proposed dates work for everyone. Use plan to record answers; only search/choose once planning_readiness is complete and origins, destination and exact dates are known. Do not research flights or hotels, invent quotes, or build an itinerary before handing off to the services.
-- Never say "I'll get back to you", "get back to you shortly", "I'll send it later" or promise a later update. Execute an action now or ask the one genuinely missing requirement now.
+- Talk like a helpful friend in the group. Understand short replies in context, remember answers, and ask only the next useful question. Don't turn planning into a questionnaire.
+- Keep track of who's joining and each traveler's origin and dates. "I'm going" confirms attendance, not availability. If Paul and Mark give different dates and Daniel hasn't answered, keep both answers and ask "@Daniel Full Name, what dates work for you?" using his exact roster name. Then help resolve any dates that don't overlap.
+- Nudge missing travelers by @mention before skipping their answer. Wait for their reply, an explicit answer on their behalf, or someone explicitly confirming to proceed without them after the nudge. Silence isn't agreement, and one person's "go" doesn't override someone else's stated date conflict. An explicit decision to proceed after a nudge can use the group's chosen dates, without inventing the missing person's answer. Keep unanswered travelers in the party unless the group says they're not joining.
+- Budget and other preferences are optional. "No budget" means no spending cap; record it and move on. Don't ask what an unlimited budget covers. Don't repeat answered questions or chase every optional category. Keep each person's stated constraints without applying one person's answer to everyone.
+- Prioritize getting people the live trip and itinerary links. Once the group has workable travelers, origins, destination and dates, start the search and share the supplied link without another confirmation. If a session already exists, share its link now even while clarifying a follow-up. Don't hold up a ready trip for optional preferences.
+- Use the latest addressed message for actions; older and untagged chat supplies context and answers, not fresh commands. Treat corrections and negation naturally. Start another session only for a new/separate trip request; ordinary follow-ups stay in this trip. Resolve pending_trip_request before acting on an ambiguous trip request.
+- Use saved results for prices and availability. The services handle flight/stay searches and itineraries. Don't invent links, fares, reservations or actions, and don't promise to get back to them later. Execute the action now or ask what's needed.
 
 Actions:
 reply: answer a question, greeting or clarification in reply, grounded in supplied facts. Ask at most one missing question. Do not promise a write or search with this action.
@@ -308,16 +307,27 @@ func (b *Brain) startReadySearch(ctx context.Context, trip *models.Trip, number 
 	return b.startTravelSearch(ctx, trip)
 }
 
-// Search requires explicit group intake, including when an option already exists.
-func planningReadinessQuestion(trip *models.Trip) string {
+// Prefer the model's focused follow-up over restarting the group questionnaire.
+func planningReadinessQuestion(trip *models.Trip, questions ...string) string {
+	if len(trip.Participants) > 0 && trip.PlanningReadiness.AttendanceConfirmed && trip.PlanningReadiness.AvailabilityConfirmed {
+		return ""
+	}
+	for _, question := range questions {
+		if strings.TrimSpace(question) != "" {
+			return question
+		}
+	}
 	if len(trip.Participants) == 0 || !trip.PlanningReadiness.AttendanceConfirmed {
-		return "Who's definitely joining, and how many people are we planning for?"
+		return "Who's joining us?"
 	}
-	if !trip.PlanningReadiness.AvailabilityConfirmed {
-		return "What dates is everyone joining available, and how long would you like to go for?"
+	var waiting []string
+	for _, person := range trip.Participants {
+		if len(person.GeneralPreferences.Availability) == 0 && person.WhatsAppName != "" {
+			waiting = append(waiting, "@"+person.WhatsAppName)
+		}
 	}
-	if !trip.PlanningReadiness.PreferencesConfirmed {
-		return "What preferences should I plan around—budget per person and what it covers, activities, flights and stays, or dietary/accessibility needs? No preference is fine too."
+	if len(waiting) > 0 {
+		return strings.Join(waiting, ", ") + ", what dates work for you?"
 	}
-	return ""
+	return "Which dates can we agree on for this trip?"
 }

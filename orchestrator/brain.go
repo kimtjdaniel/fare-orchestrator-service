@@ -728,7 +728,7 @@ func (b *Brain) applyPlan(ctx context.Context, trip *models.Trip, planned map[st
 	if err := decodeInto(planned["missing_info"], &missing); err != nil {
 		return err
 	}
-	if question := planningReadinessQuestion(trip); question != "" {
+	if question := planningReadinessQuestion(trip, missing...); question != "" {
 		return b.sayReply(ctx, trip.GroupID, question)
 	}
 	if len(people) == 0 || !allOriginsKnown(people) {
