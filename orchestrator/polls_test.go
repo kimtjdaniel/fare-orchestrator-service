@@ -99,4 +99,13 @@ func TestReplanItalyApril(t *testing.T) {
 	if !looksLikeReplan("change if plan, plan italy southern next April instead") {
 		t.Fatal("expected replan")
 	}
+	if looksLikeReplan("run me the plan again") || looksLikeReplan("run through the plan") {
+		t.Fatal("recap must not cancel the trip")
+	}
+	if !looksLikePlanRecap("run me the plan again") {
+		t.Fatal("expected plan recap")
+	}
+	if parseDestination("go to what please") != "" {
+		t.Fatal("junk phrase must not be a destination")
+	}
 }

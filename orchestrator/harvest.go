@@ -351,15 +351,27 @@ func cleanPlaceName(raw string) string {
 	}
 	skip := map[string]bool{
 		"the": true, "our": true, "this": true, "that": true, "instead": true,
+		"a": true, "an": true, "my": true, "your": true,
 		"dates": true, "date": true, "budget": true, "origin": true, "flight": true, "flights": true,
 		"option": true, "options": true, "search": true, "stay": true, "hotel": true, "hotels": true,
 		"vibe": true, "trip": true, "city": true, "cities": true, "group": true, "everyone": true,
 		"pricing": true, "price": true, "fare": true, "fares": true, "place": true, "places": true,
+		"what": true, "please": true, "again": true, "plan": true, "run": true, "through": true,
+		"me": true, "us": true, "here": true, "details": true,
 	}
-	if skip[low] {
+	fields := strings.Fields(s)
+	for len(fields) > 0 && skip[strings.ToLower(fields[0])] {
+		fields = fields[1:]
+	}
+	if len(fields) == 0 || skip[strings.ToLower(fields[0])] {
 		return ""
 	}
-	return s
+	for _, f := range fields {
+		if skip[strings.ToLower(f)] {
+			return ""
+		}
+	}
+	return strings.Join(fields, " ")
 }
 
 func datesEqual(a, b []string) bool {

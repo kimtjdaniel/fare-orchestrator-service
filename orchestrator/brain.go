@@ -293,11 +293,14 @@ func looksLikeStatusAsk(text string) bool {
 
 func looksLikeAdvisorAsk(text string) bool {
 	return looksLikeItineraryAsk(text) || looksLikeRestaurantAsk(text) || looksLikeStatusAsk(text) ||
-		looksLikeDashboardAsk(text) || looksLikeFoodMoneyAsk(text) || thanksOnlyRe.MatchString(text)
+		looksLikeDashboardAsk(text) || looksLikeFoodMoneyAsk(text) || looksLikePlanRecap(text) || thanksOnlyRe.MatchString(text)
 }
 
 func (b *Brain) answerDuringIntake(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	trip = b.syncTripBasics(ctx, trip, m.Text)
+	if looksLikePlanRecap(m.Text) {
+		return b.replayPlan(ctx, trip, m)
+	}
 	if looksLikeDashboardAsk(m.Text) {
 		link := b.tripPageURL(ctx, trip, "")
 		if link != "" {
@@ -664,16 +667,11 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 			return err
 		}
 		if looksLikeCancelBooking(m.Text) || looksLikeReplan(m.Text) {
-			recent, _ := b.Store.GetMessages(ctx, m.GroupID, nil, 20, false)
-			alreadyCancel := looksLikeCancelBooking(m.Text)
-			for _, msg := range recent {
-				if looksLikeCancelBooking(msg.Text) {
-					alreadyCancel = true
-					break
-				}
-			}
 			h := harvestText(m.Text, b.today())
-			if alreadyCancel || h.Destination == "" {
+			if !looksLikeCancelBooking(m.Text) && (h.Destination == "" || samePlace(h.Destination, trip.Destination)) {
+				return b.replayPlan(ctx, trip, m)
+			}
+			if looksLikeCancelBooking(m.Text) {
 				return b.reopenAndPlan(ctx, trip, m)
 			}
 			old := trip.Destination
@@ -1679,6 +1677,28 @@ func (b *Brain) writeAdvisorItinerary(ctx context.Context, trip *models.Trip, m 
 		text = lock + "\n\n" + text
 	}
 	return b.say(ctx, trip.GroupID, text, nil)
+}
+
+func (b *Brain) replayPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	text := formatting.LockedStatus(trip)
+	if out := advisorMap(trip); out != nil {
+		if days, _ := out["days"].([]any); len(days) > 0 {
+			if itin := formatting.AdvisorItinerary(out); itin != "" {
+				if text != "" {
+					text += "\n\n"
+				}
+				text += itin
+			}
+		}
+	}
+	if strings.TrimSpace(text) == "" {
+		return b.writeAdvisorItinerary(ctx, trip, m)
+	}
+	return b.say(ctx, trip.GroupID, text, nil)
+}
+
+func samePlace(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
 func (b *Brain) writeRestaurantPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {

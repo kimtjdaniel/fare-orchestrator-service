@@ -22,7 +22,8 @@ var (
 	wantDestRe     = regexp.MustCompile(`(?i)\b(destination|where (should|do) we|which city|which trip|where to go)\b`)
 	wantFlightRe   = regexp.MustCompile(`(?i)\b(flights?|direct|layover|non[- ]?stop)\b`)
 	cancelBookRe   = regexp.MustCompile(`(?i)\b(cancel|cancelled|call (it )?off|scrap (it|the)|undo the booking|void)\b`)
-	replanRe       = regexp.MustCompile(`(?i)(change (of |the |if )?plan|instead|different (city|destination|trip)|help us plan|plan (southern |northern )?\w+|pivot)`)
+	replanRe       = regexp.MustCompile(`(?i)(change (?:of |the |if )?plan|instead|different (?:city|destination|trip)|help us plan|pivot)`)
+	planRecapRe    = regexp.MustCompile(`(?i)\b(?:run|show|walk|replay|repeat|recap)(?:\s+\w+){0,4}\s+plan\b|\bplan again\b|\bthrough the plan\b`)
 )
 
 func looksLikeDashboardAsk(text string) bool {
@@ -37,7 +38,14 @@ func looksLikeCancelBooking(text string) bool {
 	return cancelBookRe.MatchString(text)
 }
 
+func looksLikePlanRecap(text string) bool {
+	return planRecapRe.MatchString(text)
+}
+
 func looksLikeReplan(text string) bool {
+	if looksLikePlanRecap(text) || looksLikeItineraryAsk(text) || looksLikeStatusAsk(text) {
+		return false
+	}
 	if looksLikeCancelBooking(text) {
 		return true
 	}

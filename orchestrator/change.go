@@ -315,9 +315,7 @@ func (b *Brain) applyPendingChange(ctx context.Context, trip *models.Trip, vote 
 func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	oldDest := trip.Destination
 	cut := b.replanCutover(ctx, trip.GroupID, m)
-	recent, _ := b.Store.GetMessages(ctx, trip.GroupID, &cut, 50, false)
-	h := harvestFacts(recent, b.today())
-	h = mergeHarvest(h, harvestText(m.Text, b.today()))
+	h := harvestText(m.Text, b.today())
 
 	clear := map[string]any{
 		"destination":             "",
