@@ -467,7 +467,7 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 		return false
 	}
 	// Each explicit trip request gets its own session, even in a burst of group messages.
-	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) {
+	if looksLikeNewTripRequest(m.Text) || looksLikeActivityEdit(m.Text) || activityEditVerbRe.MatchString(m.Text) || activityReplacementRe.MatchString(m.Text) || strings.Contains(strings.ToLower(m.Text), " replacement ") {
 		return false
 	}
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
@@ -601,6 +601,17 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	})
 
 	if trip != nil {
+		text := strings.TrimSpace(b.mentionRe.ReplaceAllString(m.Text, ""))
+		isReply := activityReplacementReplyRe.MatchString(text)
+		if isReply {
+			return b.activityReplacementMessage(ctx, trip, m, text)
+		}
+		if handled, err := b.handleActivityReplacementReply(ctx, trip, m, text); err != nil || handled {
+			return err
+		}
+		if looksLikeActivityReplacement(trip, text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
+			return b.activityReplacementMessage(ctx, trip, m, text)
+		}
 		handled, err := b.dispatchTurn(ctx, trip, m, sentAt)
 		if err != nil || handled {
 			return err

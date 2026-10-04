@@ -418,6 +418,31 @@ returns a conflict rather than overwriting another edit. The saved advisor and
 dashboard schedule stay in sync; undo restores only the previous schedule.
 Flight and hotel searches are not rerun for activity edits.
 
+## Activity replacements
+
+`@Fare dinner on day 2 is too expensive, suggest something cheaper` proposes one
+alternative without changing the activity. The dashboard's **Suggest replacement**
+control does the same. Suggestions keep the original day, time and activity ID;
+Gemini uses the saved itinerary and group preferences without a new search.
+Prices, opening hours and availability are unverified.
+
+One pending suggestion is saved per trip, so it survives a reload/restart with
+Mongo. WhatsApp receives the proposed activity and reason as a real message.
+Reply naturally (`yeah use that`, `nah keep dinner`, `give me another option`),
+or use **Accept / Keep original** in either dashboard view. Gemini interprets the
+reply using the pending suggestion, recent conversation and quoted message;
+ambiguous replies ask for clarification. Replies quoting an older suggestion
+cannot accept the current one. Explicit code-based replies remain supported for
+existing messages, but are no longer required. Acceptance uses the existing edit
+and undo flow; rejection leaves the activity unchanged. A schedule revision or
+new selection invalidates pending suggestions. Historical trips remain read-only.
+
+The existing trip action endpoint accepts `propose_activity_replacement` with
+`activity_id`, `request` (1–500 UTF-16 units), `expected_revision`, and optional
+`session_id`. Accept/reject actions use `proposal_id` and the same revision/session
+fields; replacement text is taken only from the saved proposal. Trip payloads
+include `pending_activity_replacement`; plans include `pendingActivityReplacement`.
+
 ## Flight sources
 
 Current flight searches use Google Flights only and return up to 15 cheapest

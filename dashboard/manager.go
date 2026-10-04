@@ -139,6 +139,7 @@ func (m *Manager) load(ctx context.Context, id string) (*group, error) {
 		if index > 0 && snapshot.Plan != nil {
 			snapshot.Plan["itineraryEditable"] = false
 			snapshot.Plan["canUndoActivityEdit"] = false
+			delete(snapshot.Plan, "pendingActivityReplacement")
 		}
 	}
 	if len(g.Sessions) > 0 {
@@ -303,6 +304,7 @@ func (m *Manager) beginLocked(ctx context.Context, t *models.Trip, fresh bool) (
 		if previous.Plan != nil {
 			previous.Plan["itineraryEditable"] = false
 			previous.Plan["canUndoActivityEdit"] = false
+			delete(previous.Plan, "pendingActivityReplacement")
 		}
 	}
 	g.Sessions = append([]*Snapshot{s}, g.Sessions...)

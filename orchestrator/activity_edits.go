@@ -51,28 +51,70 @@ func looksLikeTripActivityEdit(trip *models.Trip, text string) bool {
 	return false
 }
 
-func (b *Brain) activityAction(ctx context.Context, trip *models.Trip, body map[string]any) (*models.Trip, string, error) {
+func (b *Brain) validateActivityRequest(ctx context.Context, trip *models.Trip, body map[string]any) error {
 	if !models.ScheduleEditable(trip) {
-		return nil, "", &DashboardError{Status: 409, Msg: "this trip's itinerary cannot be edited right now"}
+		return &DashboardError{Status: 409, Msg: "this trip's itinerary cannot be edited right now"}
 	}
 	if sid := strAny(body["session_id"]); sid != "" {
 		if b.Dashboard == nil {
-			return nil, "", &DashboardError{Status: 409, Msg: "active session unavailable"}
+			return &DashboardError{Status: 409, Msg: "active session unavailable"}
 		}
 		current, err := b.Dashboard.CurrentID(ctx, trip.GroupID)
 		if err != nil {
-			return nil, "", err
+			return err
 		}
 		if current != sid {
-			return nil, "", &DashboardError{Status: 409, Msg: "only the active trip can be edited"}
+			return &DashboardError{Status: 409, Msg: "only the active trip can be edited"}
 		}
 	}
 	revision := numAny(body["expected_revision"])
 	if revision == nil || *revision != float64(trip.ItineraryRevision) {
-		return nil, "", &DashboardError{Status: 409, Msg: store.ErrItineraryConflict.Error()}
+		return &DashboardError{Status: 409, Msg: store.ErrItineraryConflict.Error()}
+	}
+	return nil
+}
+
+func activityText(key string, raw any) (string, error) {
+	value, ok := raw.(string)
+	if !ok {
+		return "", &DashboardError{Status: 400, Msg: key + " must be text"}
+	}
+	value = strings.TrimSpace(value)
+	limit := 2000
+	if key == "title" {
+		limit = 200
+	}
+	// Match the browser's maxLength, which counts UTF-16 code units.
+	if (value == "" && key != "description") || len(utf16.Encode([]rune(value))) > limit {
+		return "", &DashboardError{Status: 400, Msg: key + " is empty or too long"}
+	}
+	if key == "time" {
+		parsed, err := time.Parse("15:04", value)
+		if err != nil || parsed.Format("15:04") != value {
+			return "", &DashboardError{Status: 400, Msg: "time must use HH:MM (24-hour local time)"}
+		}
+	}
+	return value, nil
+}
+
+func findScheduleActivity(itinerary map[string]any, id string) (map[string]any, []any) {
+	for _, raw := range sliceAny(asMapAny(itinerary["advisor"])["days"]) {
+		activities := sliceAny(asMapAny(raw)["activities"])
+		for _, item := range activities {
+			activity := asMapAny(item)
+			if id != "" && strAny(activity["id"]) == id {
+				return activity, activities
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (b *Brain) activityAction(ctx context.Context, trip *models.Trip, body map[string]any) (*models.Trip, string, error) {
+	if err := b.validateActivityRequest(ctx, trip, body); err != nil {
+		return nil, "", err
 	}
 	itinerary := models.ScheduleItinerary(trip, trip.Itinerary, false)
-	advisor := asMapAny(itinerary["advisor"])
 	message := "Undid the last itinerary edit."
 	if strAny(body["action"]) == "undo_activity_edit" {
 		previous := asMapAny(itinerary["activity_edit_undo"])
@@ -82,19 +124,7 @@ func (b *Brain) activityAction(ctx context.Context, trip *models.Trip, body map[
 		itinerary["advisor"] = previous
 		delete(itinerary, "activity_edit_undo")
 	} else {
-		id := strAny(body["activity_id"])
-		var activity map[string]any
-		var dayActivities []any
-		for _, raw := range sliceAny(advisor["days"]) {
-			day := asMapAny(raw)
-			for _, item := range sliceAny(day["activities"]) {
-				candidate := asMapAny(item)
-				if strAny(candidate["id"]) == id && id != "" {
-					activity = candidate
-					dayActivities = sliceAny(day["activities"])
-				}
-			}
-		}
+		activity, dayActivities := findScheduleActivity(itinerary, strAny(body["activity_id"]))
 		if activity == nil {
 			return nil, "", &DashboardError{Status: 404, Msg: "activity not found"}
 		}
@@ -106,24 +136,9 @@ func (b *Brain) activityAction(ctx context.Context, trip *models.Trip, body map[
 			if !exists {
 				continue
 			}
-			value, ok := raw.(string)
-			if !ok {
-				return nil, "", &DashboardError{Status: 400, Msg: key + " must be text"}
-			}
-			value = strings.TrimSpace(value)
-			limit := 2000
-			if key == "title" {
-				limit = 200
-			}
-			// Match the browser's maxLength, which counts UTF-16 code units.
-			if (value == "" && key != "description") || len(utf16.Encode([]rune(value))) > limit {
-				return nil, "", &DashboardError{Status: 400, Msg: key + " is empty or too long"}
-			}
-			if key == "time" {
-				parsed, err := time.Parse("15:04", value)
-				if err != nil || parsed.Format("15:04") != value {
-					return nil, "", &DashboardError{Status: 400, Msg: "time must use HH:MM (24-hour local time)"}
-				}
+			value, err := activityText(key, raw)
+			if err != nil {
+				return nil, "", err
 			}
 			if strAny(activity[key]) != value {
 				activity[key] = value
@@ -142,11 +157,15 @@ func (b *Brain) activityAction(ctx context.Context, trip *models.Trip, body map[
 			message = fmt.Sprintf("Moved %s from %s to %s. Say “undo itinerary edit” to revert.", strAny(activity["title"]), oldTime, strAny(activity["time"]))
 		}
 	}
-	itinerary = models.ScheduleItinerary(trip, itinerary, false)
+	delete(itinerary, "pending_activity_replacement")
+	return b.saveActivityItinerary(ctx, trip, itinerary, message)
+}
+
+func (b *Brain) saveActivityItinerary(ctx context.Context, trip *models.Trip, itinerary map[string]any, message string) (*models.Trip, string, error) {
+	next := *trip
+	next.ItineraryRevision++
+	itinerary = models.ScheduleItinerary(&next, itinerary, false)
 	plan := asMapAny(itinerary["dashboard_plan"])
-	if plan != nil {
-		plan["itineraryRevision"] = trip.ItineraryRevision + 1
-	}
 	updated, err := b.Store.UpdateItinerary(ctx, trip, itinerary)
 	if errors.Is(err, store.ErrItineraryConflict) {
 		return nil, "", &DashboardError{Status: 409, Msg: err.Error()}
