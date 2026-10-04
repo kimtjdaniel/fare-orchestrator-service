@@ -17,10 +17,11 @@ type MemoryStore struct {
 	messages []models.Message
 	trips    map[string]*models.Trip // keyed by group_id (== trip.ID, singleton per group)
 	sessions map[string]*models.WhatsAppSession
+	expenses map[string]*models.ExpenseLedger
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{trips: map[string]*models.Trip{}, sessions: map[string]*models.WhatsAppSession{}}
+	return &MemoryStore{trips: map[string]*models.Trip{}, sessions: map[string]*models.WhatsAppSession{}, expenses: map[string]*models.ExpenseLedger{}}
 }
 
 func (s *MemoryStore) Connect(ctx context.Context) error { return nil }

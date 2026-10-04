@@ -22,6 +22,7 @@ type MongoStore struct {
 	trips    *mongo.Collection
 	msgs     *mongo.Collection
 	sessions *mongo.Collection
+	expenses *mongo.Collection
 }
 
 func NewMongoStore(uri, dbName string) *MongoStore {
@@ -41,6 +42,15 @@ func (s *MongoStore) Connect(ctx context.Context) error {
 	s.trips = db.Collection("trips")
 	s.msgs = db.Collection("messages")
 	s.sessions = db.Collection("whatsapp_sessions")
+	s.expenses = db.Collection("expense_ledgers")
+	_, err = s.expenses.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "group_id", Value: 1}, {Key: "operations.message_id", Value: 1}},
+		Options: options.Index().SetUnique(true).SetPartialFilterExpression(
+			bson.D{{Key: "operations.message_id", Value: bson.D{{Key: "$exists", Value: true}}}}),
+	})
+	if err != nil {
+		return err
+	}
 
 	// Idempotent index creation.
 	_, err = s.msgs.Indexes().CreateMany(ctx, []mongo.IndexModel{
