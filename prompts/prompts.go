@@ -70,9 +70,10 @@ The user content supplies current_trip, latest_message and requested_change as J
 If they cancelled a previous city, do not mention that city except one short acknowledgement.
 Do both in one JSON response:
 1) Record each human's preferences from the chat (whatsapp_name is internal JSON; in intro/missing_info you may @Their Full Name from the roster).
-2) Prepare only the inputs needed to start the backend session: travelers, their departure cities/airports, a destination and exact departure/return dates. If the destination is specified, return one option immediately. If it is undecided, suggest 2-3 destinations using the stated preferences, without researching them.
-The backend's flight and stay services do all searches and availability checks. Do not check flights yourself, estimate fares, compare hotels, build a day-by-day itinerary, or seek an extra confirmation before starting. Budget, food, vibe and other optional preferences must be retained when supplied, but must not delay a session whose travelers, origins, destination and dates are known.
-If a required input is missing, leave options empty and put ONE plain group question in missing_info. Once the required inputs are complete, missing_info must be empty.
+2) First establish the full traveling party and headcount, each traveler's availability, and their preferences. Then prepare travelers, departure origins, destination and exact departure/return dates. A group member may explicitly answer for everyone; never assume the speaker is the entire party or that proposed dates work for everyone.
+The backend's flight and stay services do all searches and availability checks. Do not check flights yourself, estimate fares, compare hotels, build a day-by-day itinerary, or start a search before intake is complete. Ask about budget and what it covers, activities/vibe, stay and flight preferences, and dietary/accessibility constraints. Explicit "no preference", "flexible", or "no constraints" answers count; silence and defaults do not. Ask one focused group question at a time and preserve earlier answers.
+Return planning_readiness as the complete current readiness state, preserving prior confirmations unless corrected. attendance_confirmed requires an explicitly established complete traveling party/headcount; participants must contain the complete current traveling party, excluding people explicitly not joining. availability_confirmed requires availability or agreement to the exact dates for every traveler, not just the speaker. preferences_confirmed requires the group to have supplied or explicitly waived budget, activities/vibe, stay/flight preferences, and dietary/accessibility constraints. A speaker explicitly answering for everyone is valid; do not require each person to message separately. Never mark a requirement confirmed merely to start faster.
+If any readiness flag is false or a required input is missing, leave options empty and put ONE plain group question in missing_info. Only once all readiness flags and required inputs are complete may you propose options and start searching. Do not share session links before then.
 
 Attribution: people often speak for others. Put facts on the person they are about.
 - "I know Tom's schedule, he's not available that date" -> Tom is busy then, not the speaker.
@@ -302,12 +303,22 @@ var PlanTrip = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"participants": RecordPreferences["schema"].(map[string]any)["properties"].(map[string]any)["participants"],
+			"planning_readiness": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"attendance_confirmed":   map[string]any{"type": "boolean"},
+					"availability_confirmed": map[string]any{"type": "boolean"},
+					"preferences_confirmed":  map[string]any{"type": "boolean"},
+				},
+				"required":             []string{"attendance_confirmed", "availability_confirmed", "preferences_confirmed"},
+				"additionalProperties": false,
+			},
 			"missing_info": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 			"intro":        map[string]any{"type": "string", "description": "1-2 spoken sentences to the group. Empty if missing_info. No names or @tags."},
 			"options":      PlanOptions,
 			"budget_note":  map[string]any{"type": "string", "description": "Complete current budget and what it covers, with currency. Preserve the existing budget unless explicitly corrected. Empty if unknown."},
 		},
-		"required":             []string{"participants", "missing_info"},
+		"required":             []string{"participants", "missing_info", "planning_readiness"},
 		"additionalProperties": false,
 	},
 }

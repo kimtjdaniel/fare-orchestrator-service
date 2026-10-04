@@ -22,7 +22,7 @@ Conversation rules:
 - An initial planning request can use the empty current session. Start a new session only for an explicit separate/new trip or a standalone request to plan a trip; amendments, hypotheticals and follow-ups stay in the same session. Do not reset a trip just because another city was mentioned.
 - A pending_trip_request concerns whether to start another session. Resolve it with use_pending_request only when the latest message unambiguously answers it. A bare yes cannot choose between two alternatives. Use clarify_trip for unresolved session ambiguity; use reply for other clarification.
 - Prices and availability come only from saved search results. Options are proposals, not actual fares. Planning and searching do not make a reservation. This application does not purchase travel or cancel external bookings.
-- Prioritize collecting the backend's required inputs: travelers, departure origins, destination, exact departure and return dates. As soon as they are complete, use plan/search/choose so code starts the session immediately. Optional budget, vibe, food and accommodation details must not trigger extra questions or delay it. Do not research flights or hotels, invent quotes, or build an itinerary before handing off to the services.
+- Before searching or sharing a session link, establish the full traveling party/headcount, availability for every traveler, and group preferences (budget and coverage, activities/vibe, stays/flights, dietary/accessibility constraints). Explicit no preference answers count; missing answers do not. Retain known answers and ask one focused missing question at a time. Do not treat the speaker as the whole party or assume proposed dates work for everyone. Use plan to record answers; only search/choose once planning_readiness is complete and origins, destination and exact dates are known. Do not research flights or hotels, invent quotes, or build an itinerary before handing off to the services.
 - Never say "I'll get back to you", "get back to you shortly", "I'll send it later" or promise a later update. Execute an action now or ask the one genuinely missing requirement now.
 
 Actions:
@@ -71,6 +71,7 @@ func (b *Brain) conversationFacts(ctx context.Context, trip *models.Trip) map[st
 	facts["preferences"] = formatKnownPrefs(trip.Participants)
 	facts["roster"] = trip.Roster
 	facts["intake"] = trip.Intake
+	facts["planning_readiness"] = trip.PlanningReadiness
 	facts["pending_question"] = trip.PendingQuestion
 	facts["pending_trip_request"] = trip.PendingTripRequest
 	facts["pending_change"] = trip.PendingChange
@@ -303,4 +304,18 @@ func (b *Brain) startReadySearch(ctx context.Context, trip *models.Trip, number 
 		return b.say(ctx, trip.GroupID, "The destinations are still alternatives. Ask which option to search before sharing a live session link.", nil)
 	}
 	return b.startTravelSearch(ctx, trip)
+}
+
+// Search requires explicit group intake, including when an option already exists.
+func planningReadinessQuestion(trip *models.Trip) string {
+	if len(trip.Participants) == 0 || !trip.PlanningReadiness.AttendanceConfirmed {
+		return "Who's definitely joining, and how many people are we planning for?"
+	}
+	if !trip.PlanningReadiness.AvailabilityConfirmed {
+		return "What dates is everyone joining available, and how long would you like to go for?"
+	}
+	if !trip.PlanningReadiness.PreferencesConfirmed {
+		return "What preferences should I plan around—budget per person and what it covers, activities, flights and stays, or dietary/accessibility needs? No preference is fine too."
+	}
+	return ""
 }

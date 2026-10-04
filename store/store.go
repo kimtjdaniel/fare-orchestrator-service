@@ -147,6 +147,8 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			}
 		case "options":
 			trip.Options, _ = v.([]models.Option)
+		case "planning_readiness":
+			trip.PlanningReadiness, _ = v.(models.PlanningReadiness)
 		case "participants":
 			trip.Participants, _ = v.([]models.Participant)
 		case "flights":

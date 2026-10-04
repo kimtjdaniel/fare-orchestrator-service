@@ -401,12 +401,21 @@ type Accommodation struct {
 // Trip is a SINGLETON per WhatsApp group: ID == GroupID, one document reused for every trip cycle
 // that group runs (no history of past trips). When a Booked/Cancelled trip's group gets
 // @mentioned again, the same document resets back to Collecting (see store.ResetTrip).
+// PlanningReadiness records explicit group answers, rather than inferred defaults.
+type PlanningReadiness struct {
+	AttendanceConfirmed   bool `json:"attendance_confirmed" bson:"attendance_confirmed"`
+	AvailabilityConfirmed bool `json:"availability_confirmed" bson:"availability_confirmed"`
+	PreferencesConfirmed  bool `json:"preferences_confirmed" bson:"preferences_confirmed"`
+}
+
 type Trip struct {
 	ID        string    `json:"id" bson:"_id"` // == GroupID
 	GroupID   string    `json:"group_id" bson:"group_id"`
 	GroupName string    `json:"group_name" bson:"group_name"`
 	State     TripState `json:"state" bson:"state"`
 	SessionID string    `json:"session_id,omitempty" bson:"session_id,omitempty"`
+
+	PlanningReadiness PlanningReadiness `json:"planning_readiness" bson:"planning_readiness"`
 
 	Participants         []Participant `json:"participants" bson:"participants"`
 	Options              []Option      `json:"options" bson:"options"`

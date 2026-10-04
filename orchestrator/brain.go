@@ -691,13 +691,29 @@ func (b *Brain) applyPlan(ctx context.Context, trip *models.Trip, planned map[st
 			}
 		}
 	}
+	readiness := trip.PlanningReadiness
+	if planned["planning_readiness"] != nil {
+		if err := decodeInto(planned["planning_readiness"], &readiness); err != nil {
+			return err
+		}
+	}
 	people := mergeParticipants(trip.Participants, extracted)
+	// Confirmed extraction supplies the complete current traveling party.
+	if readiness.AttendanceConfirmed {
+		people = nil
+		for _, person := range extracted {
+			if previous := matchName(person.WhatsAppName, trip.Participants); previous != nil {
+				person = overlayParticipant(*previous, person)
+			}
+			people = append(people, person)
+		}
+	}
 	for i := range people {
 		if people[i].PID == "" {
 			people[i].PID = fmt.Sprintf("p_%d_%d", time.Now().UnixNano(), i)
 		}
 	}
-	fields := map[string]any{"participants": people}
+	fields := map[string]any{"participants": people, "planning_readiness": readiness}
 	if budget, ok := planned["budget_note"].(string); ok {
 		fields["budget_note"] = budget
 	}
@@ -711,6 +727,9 @@ func (b *Brain) applyPlan(ctx context.Context, trip *models.Trip, planned map[st
 	var missing []string
 	if err := decodeInto(planned["missing_info"], &missing); err != nil {
 		return err
+	}
+	if question := planningReadinessQuestion(trip); question != "" {
+		return b.sayReply(ctx, trip.GroupID, question)
 	}
 	if len(people) == 0 || !allOriginsKnown(people) {
 		for _, question := range missing {
@@ -1559,6 +1578,13 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 }
 
 func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error {
+	if question := planningReadinessQuestion(trip); question != "" {
+		updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
+		if err != nil {
+			return err
+		}
+		return b.sayReply(ctx, updated.GroupID, question)
+	}
 	if trip.State != models.AwaitingChoice {
 		return b.say(ctx, trip.GroupID, "No new search was started. Explain the current trip state and share its existing live or completed session if available.", nil)
 	}
