@@ -18,8 +18,9 @@ func destIsSet(trip *models.Trip) bool {
 	return len(trip.Options) > 0
 }
 
-func humanRoster(trip *models.Trip, incoming []models.GroupMember, agentID, extraID, extraName string) []models.GroupMember {
+func humanRoster(trip *models.Trip, incoming []models.GroupMember, agentID, extraID, extraName string, extraHosts ...string) []models.GroupMember {
 	seen := map[string]bool{}
+	hosts := hostIDs(agentID, extraHosts...)
 	var out []models.GroupMember
 	add := func(m models.GroupMember) {
 		id := strings.TrimSpace(m.ID)
@@ -27,10 +28,7 @@ func humanRoster(trip *models.Trip, incoming []models.GroupMember, agentID, extr
 		if id == "" && name == "" {
 			return
 		}
-		if m.IsAgent || looksLikeWhatsAppID(name) {
-			return
-		}
-		if agentID != "" && samePerson(id, agentID) {
+		if m.IsAgent || isHost(id, hosts) || looksLikeWhatsAppID(name) {
 			return
 		}
 		key := id
@@ -63,6 +61,28 @@ func neededIDs(members []models.GroupMember) []string {
 		}
 	}
 	return ids
+}
+
+func hostIDs(agentID string, extra ...string) []string {
+	var out []string
+	if strings.TrimSpace(agentID) != "" {
+		out = append(out, agentID)
+	}
+	for _, id := range extra {
+		if strings.TrimSpace(id) != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func isHost(id string, hosts []string) bool {
+	for _, host := range hosts {
+		if samePerson(id, host) {
+			return true
+		}
+	}
+	return false
 }
 
 func samePerson(a, b string) bool {
@@ -122,7 +142,7 @@ func anyoneVotedNo(pc *models.PendingChange) bool {
 }
 
 func (b *Brain) rememberRoster(ctx context.Context, trip *models.Trip, incoming models.IncomingMessage) {
-	roster := humanRoster(trip, incoming.Participants, incoming.AgentID, incoming.SenderID, incoming.SenderName)
+	roster := humanRoster(trip, incoming.Participants, incoming.AgentID, incoming.SenderID, incoming.SenderName, incoming.AgentIDs...)
 	if len(roster) == 0 {
 		return
 	}
@@ -189,7 +209,7 @@ func (b *Brain) proposedLockedChange(trip *models.Trip, text string) *models.Pen
 }
 
 func (b *Brain) startChangePoll(ctx context.Context, trip *models.Trip, m models.IncomingMessage, change *models.PendingChange) error {
-	roster := humanRoster(trip, m.Participants, m.AgentID, m.SenderID, m.SenderName)
+	roster := humanRoster(trip, m.Participants, m.AgentID, m.SenderID, m.SenderName, m.AgentIDs...)
 	needed := neededIDs(roster)
 	if len(needed) == 0 && m.SenderID != "" {
 		needed = []string{m.SenderID}
@@ -213,9 +233,20 @@ func (b *Brain) handleChangeVote(ctx context.Context, trip *models.Trip, vote mo
 	if pc == nil {
 		return nil
 	}
+	hosts := hostIDs(vote.AgentID, vote.AgentIDs...)
+	if isHost(vote.VoterID, hosts) {
+		return nil
+	}
 	if pc.Votes == nil {
 		pc.Votes = map[string]string{}
 	}
+	needed := make([]string, 0, len(pc.Needed))
+	for _, id := range pc.Needed {
+		if !isHost(id, hosts) {
+			needed = append(needed, id)
+		}
+	}
+	pc.Needed = needed
 	key := voteKey(pc.Needed, vote.VoterID)
 	if selected == "" {
 		delete(pc.Votes, key)

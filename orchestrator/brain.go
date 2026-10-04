@@ -78,6 +78,8 @@ type Brain struct {
 	locks     map[string]*sync.Mutex
 	batchMu   sync.Mutex
 	batches   map[string]*taggedBatch
+	ballotMu  sync.Mutex
+	ballots   map[string]map[string][]string
 }
 
 type taggedBatch struct {

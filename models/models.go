@@ -64,6 +64,7 @@ type IncomingMessage struct {
 	Timestamp    int64          `json:"timestamp"` // unix seconds
 	MessageID    string         `json:"message_id,omitempty"`
 	AgentID      string         `json:"agent_id,omitempty"`
+	AgentIDs     []string       `json:"agent_ids,omitempty"`
 	Quoted       *QuotedMessage `json:"quoted,omitempty"`
 	CoAskers     []string       `json:"-"` // other people in a batched @mention burst
 }
@@ -492,6 +493,7 @@ type PollVote struct {
 	SelectedOptions []string `json:"selected_options"`
 	Timestamp       int64    `json:"timestamp"`
 	AgentID         string   `json:"agent_id,omitempty"`
+	AgentIDs        []string `json:"agent_ids,omitempty"`
 }
 
 // ChosenOption reconstructs an Option-shaped view of the group's pick from the trip's own flat
