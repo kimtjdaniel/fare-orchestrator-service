@@ -25,7 +25,7 @@ func CanonicalGroupID(id string) string {
 			return id[:len(id)-len(suffix)] + "@" + suffix[1:]
 		}
 	}
-	if id != "" && !strings.ContainsAny(id, ".:") {
+	if id != "" && strings.Trim(id, "0123456789") == "" {
 		return id + "@g.us"
 	}
 	return id

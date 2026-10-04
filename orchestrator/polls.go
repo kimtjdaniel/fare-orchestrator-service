@@ -449,6 +449,9 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	if trip == nil {
 		return nil
 	}
+	if trip.State == models.Collecting && isIntakePoll(trip, vote.PollMessageID) {
+		return b.runIntakePollVote(ctx, trip, vote)
+	}
 	if strings.Contains(strings.ToLower(vote.PollName), "paying") {
 		return b.applyPayerVote(ctx, trip, vote, selected)
 	}

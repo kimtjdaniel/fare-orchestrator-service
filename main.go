@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fare-brain/config"
@@ -195,10 +196,51 @@ func getWhatsAppSessionHandler(st store.Store) http.HandlerFunc {
 	}
 }
 
+// webhookDedup guards against the robot's forwardToBrain retrying a POST whose response it
+// never saw (network blip after the brain already processed it) — a plain HTTP retry, not a
+// WhatsApp-level duplicate (the robot already dedupes those itself before this request is ever
+// sent). Per spec §7.5: dedupe messages on message_id, poll votes on (poll_id, voter, options).
+// Deliberately NOT a persistent store — this only needs to survive the few seconds a retry
+// could plausibly land in, and keeping it in-process avoids touching the trip data model at all.
+type webhookDedup struct {
+	mu   sync.Mutex
+	seen map[string]time.Time
+}
+
+const webhookDedupTTL = 2 * time.Minute
+
+func newWebhookDedup() *webhookDedup {
+	return &webhookDedup{seen: make(map[string]time.Time)}
+}
+
+// seenBefore reports whether key was already recorded within the TTL, recording it either way.
+// Empty keys (e.g. a message with no message_id) are never deduped.
+func (d *webhookDedup) seenBefore(key string) bool {
+	if key == "" {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now()
+	if len(d.seen) > 4096 {
+		for k, t := range d.seen {
+			if now.Sub(t) > webhookDedupTTL {
+				delete(d.seen, k)
+			}
+		}
+	}
+	if t, ok := d.seen[key]; ok && now.Sub(t) < webhookDedupTTL {
+		return true
+	}
+	d.seen[key] = now
+	return false
+}
+
 // webhookHandler responds instantly; the work (Gemini, searches, Skyvern) happens in a
 // background goroutine, and replies are delivered through Messenger.Send. Keeps the
 // robot/Telegram from timing out.
 func webhookHandler(brain *orchestrator.Brain) http.HandlerFunc {
+	dedup := newWebhookDedup()
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -215,7 +257,10 @@ func webhookHandler(brain *orchestrator.Brain) http.HandlerFunc {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
-			go brain.HandlePollVote(context.Background(), vote)
+			key := vote.PollMessageID + "|" + vote.VoterID + "|" + strings.Join(vote.SelectedOptions, ",")
+			if !dedup.seenBefore(key) {
+				go brain.HandlePollVote(context.Background(), vote)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{"reply": nil, "accepted": true})
 			return
 		}
@@ -224,7 +269,9 @@ func webhookHandler(brain *orchestrator.Brain) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		go brain.Handle(context.Background(), m)
+		if !dedup.seenBefore(m.MessageID) {
+			go brain.Handle(context.Background(), m)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"reply": nil, "accepted": true})
 	}
 }

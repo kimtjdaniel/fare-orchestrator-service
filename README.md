@@ -4,6 +4,8 @@ The Go backend owns group planning and broadcasts progress to the frontend.
 
 ## Dashboard contract
 
+- `GET /dashboard/events`: dashboard-wide WebSocket, with an immediate `dashboard.snapshot` and live events from all groups.
+- `GET /dashboard/sessions`: planning session snapshots across all groups, newest first.
 - `GET /groups/{groupId}/events`: group-scoped WebSocket, with an immediate `group.snapshot`.
 - `GET /groups/{groupId}/sessions`: latest 20 planning session snapshots for the group.
 - `GET /groups/{groupId}/sessions/{sessionId}`: one group-scoped session snapshot.
@@ -14,10 +16,43 @@ the frontend shows a popup linking to `/dashboard/{groupId}/{sessionId}`. The
 backend still waits for the group's destination choice before starting searches.
 Frontend connections and reconnects do not start searches.
 
+Gemini routes conversational messages using the active trip, recent chat, and any
+quoted message. Explicit separate-trip requests such as `@Fare let's also plan a
+Paris trip` or `@Fare create a new session` create a fresh UUID session, even while
+the current trip awaits choice or approval. Clear standalone commands such as
+`@Fare plan a 7-night Tokyo trip ...` start a new session directly, including
+repeated requests with identical dates and destination. Commands referring to
+the current trip or its itinerary still use conversational routing.
+Follow-ups such as `yes`, `1`, searches,
+budget changes, and date revisions keep the same session through completion and
+retries. Starting searches does not create another session.
+
+For ambiguous requests such as `What about Paris?`, Fare asks whether to change
+the current trip or start a separate one. The pending request is stored in the
+trip's optional `pending_trip_request` field (`text`, `sender_name`, `sent_at`,
+`question`), and survives restarts with Mongo. Reply `continue this trip` or
+`new trip` to apply the original request; a bare `yes` repeats the routing question
+instead of approving the old trip. If classification fails, Fare asks for
+clarification before changing the trip.
+
+Repeating a standalone trip request starts another session. Webhook retries
+with the same `message_id` remain deduplicated. The latest request becomes the
+group's active trip; earlier dashboard snapshots remain available in its latest
+20 sessions. Only the latest trip is active for chat replies. Starting a new trip
+does not approve or cancel any previous booking.
+
 Every WebSocket event has `version: 1`, `type`, `groupId`, and `revision`.
+The dashboard snapshot uses an empty `groupId`; subsequent events retain their
+source group ID. Dashboard event revisions cover all groups, while group event
+revisions are scoped to the group.
 Session events also have `sessionId`, `session`, and `timestamp`. Normal progress
 events include the authoritative `snapshot`; browser events carry `agentType`
 and the travel service's original `event` payload.
+
+Browser previews include `website` and `origin`. Flight preview keys use
+`{website}:{origin}` (for example, `google_flights:YVR` and `kayak:YVR`), so
+simultaneous source browsers never replace each other. Hotel preview keys are
+`booking_com` and `airbnb`. Both sources stream independently for each agent.
 
 Events:
 
