@@ -125,13 +125,21 @@ func (b *Brain) searchDashboard(ctx context.Context, t *models.Trip, origin stri
 	var flights []models.FlightOffer
 	var hotels []models.HotelOffer
 	var flightErr, hotelErr error
+	destAP := option.DestinationAirport
+	if destAP == "" {
+		if cands := destAirportCandidates("", option.Destination); len(cands) > 0 {
+			destAP = cands[0]
+		} else {
+			destAP = option.Destination
+		}
+	}
 	go func() {
 		defer close(flightDone)
 		if err := b.dashboardEvent(ctx, t, "flight_search.started", map[string]any{"message": "Flight agent started"}); err != nil {
 			flightErr = err
 			return
 		}
-		flights, flightErr = tools.SearchFlights(ctx, b.Config, origin, option.DestinationAirport, option.EmbarkingDate, option.ReturningDate)
+		flights, flightErr = tools.SearchFlights(ctx, b.Config, origin, destAP, option.EmbarkingDate, option.ReturningDate)
 		if flightErr != nil {
 			_ = b.dashboardEvent(ctx, t, "flight_search.failed", map[string]any{"message": flightErr.Error()})
 		}

@@ -128,18 +128,21 @@ func (s *MongoStore) CreateTrip(ctx context.Context, groupID, groupName string) 
 
 func (s *MongoStore) GetTrip(ctx context.Context, tripID string) (*models.Trip, error) {
 	var trip models.Trip
-	err := s.trips.FindOne(ctx, bson.D{{Key: "_id", Value: tripID}}).Decode(&trip)
-	if err == mongo.ErrNoDocuments {
-		err = s.trips.FindOne(ctx, bson.D{{Key: "group_id", Value: tripID}}).Decode(&trip)
+	var err error
+	for _, id := range models.GroupIDKeys(tripID) {
+		err = s.trips.FindOne(ctx, bson.D{{Key: "_id", Value: id}}).Decode(&trip)
+		if err == mongo.ErrNoDocuments {
+			err = s.trips.FindOne(ctx, bson.D{{Key: "group_id", Value: id}}).Decode(&trip)
+		}
+		if err == nil {
+			normalizeTrip(&trip, id)
+			return &trip, nil
+		}
+		if err != mongo.ErrNoDocuments {
+			return nil, err
+		}
 	}
-	if err == mongo.ErrNoDocuments {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	normalizeTrip(&trip, tripID)
-	return &trip, nil
+	return nil, nil
 }
 
 func (s *MongoStore) ListTrips(ctx context.Context) ([]*models.Trip, error) {

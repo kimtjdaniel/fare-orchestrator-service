@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	dashboardAskRe = regexp.MustCompile(`(?i)(dashboard|session link|live session|trip page|details page|the link again|send (me |us )?(the )?(url|link)|localhost)`)
+	dashboardAskRe = regexp.MustCompile(`(?i)(dashboard|session link|live session|trip page|details page|the link again|send (me |us )?(the )?(url|link)|localhost|unique (link|url|session)|planning (page|session)|create a new session)`)
 	stuckRe        = regexp.MustCompile(`(?i)(can'?t decide|cannot decide|undecided|we'?re stuck|help us pick|make a poll|start a poll|put it (in )?a poll|flip a coin)`)
 	wantBudgetRe   = regexp.MustCompile(`(?i)\bbudget\b`)
 	wantDatesRe    = regexp.MustCompile(`(?i)\b(dates?|weekend|when (do|should) we|calendar)\b`)
@@ -41,32 +41,52 @@ func looksLikeReplan(text string) bool {
 	if looksLikeCancelBooking(text) {
 		return true
 	}
+	if looksLikeBookAsk(text) || looksLikeDashboardAsk(text) {
+		return false
+	}
 	if replanRe.MatchString(text) {
 		return true
 	}
 	return parseDestination(text) != ""
 }
 
-func (b *Brain) dashboardOnce(trip *models.Trip) string {
-	if trip.SharedDashboard {
-		return ""
-	}
-	return strings.TrimSpace(b.Config.DashboardURL)
-}
-
-func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
+func (b *Brain) tripPageURL(ctx context.Context, trip *models.Trip) string {
 	base := ""
 	if b.Config != nil {
 		base = strings.TrimSpace(b.Config.DashboardURL)
 	}
-	if base == "" {
+	gid := strings.TrimSpace(trip.GroupID)
+	if gid == "" {
+		gid = strings.TrimSpace(trip.ID)
+	}
+	sid := ""
+	if b.Dashboard != nil {
+		sid, _ = b.Dashboard.CurrentID(ctx, gid)
+		if sid == "" {
+			sid, _ = b.Dashboard.Begin(ctx, trip)
+		}
+	}
+	return formatting.SessionLink(base, gid, sid)
+}
+
+func (b *Brain) dashboardOnce(ctx context.Context, trip *models.Trip) string {
+	if trip.SharedDashboard {
+		return ""
+	}
+	return b.tripPageURL(ctx, trip)
+}
+
+func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
+	if b.Dashboard != nil {
+		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
+			return err
+		}
+	}
+	link := b.tripPageURL(ctx, trip)
+	if link == "" {
 		return b.say(ctx, trip.GroupID, "I don't have a trip page set up to send.", nil)
 	}
-	link := formatting.DashboardLink(base, trip.GroupID)
-	if link == "" {
-		link = formatting.DashboardLink(base, trip.ID)
-	}
-	text := "This group's live trip: " + link
+	text := "Watch the flight and hotel agents live:\n" + link + "\nItinerary, money, and chat stay in sync on that page."
 	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
 		return err
 	}
@@ -75,7 +95,7 @@ func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
 }
 
 func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string, options []models.Option) error {
-	url := b.dashboardOnce(trip)
+	url := b.dashboardOnce(ctx, trip)
 	if err := b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, url), optionButtons(options)); err != nil {
 		return err
 	}
@@ -90,7 +110,7 @@ func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string
 }
 
 func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen models.Option, itin map[string]any, people []models.Participant) error {
-	url := b.dashboardOnce(trip)
+	url := b.dashboardOnce(ctx, trip)
 	if err := b.say(ctx, trip.GroupID, formatting.SummaryMessage(chosen, itin, people, trip.ID, url),
 		[]messaging.Button{{Label: "Book it", Payload: "✅"}, {Label: "Back", Payload: "❌"}}); err != nil {
 		return err

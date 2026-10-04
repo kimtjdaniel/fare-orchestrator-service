@@ -136,7 +136,7 @@ func (b *Brain) maybeGateDetails(ctx context.Context, trip *models.Trip, m model
 	if trip == nil || strings.TrimSpace(m.Text) == "" {
 		return false, nil
 	}
-	if looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) || looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeHotelAsk(m.Text) || looksLikeRestaurantAsk(m.Text) || looksLikeIntroAsk(m.Text) || looksLikeWhoPays(m.Text) {
+	if looksLikeBookAsk(m.Text) || looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) || looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeHotelAsk(m.Text) || looksLikeRestaurantAsk(m.Text) || looksLikeIntroAsk(m.Text) || looksLikeWhoPays(m.Text) {
 		return false, nil
 	}
 	change := b.proposedLockedChange(trip, m.Text)
@@ -148,6 +148,9 @@ func (b *Brain) maybeGateDetails(ctx context.Context, trip *models.Trip, m model
 }
 
 func (b *Brain) proposedLockedChange(trip *models.Trip, text string) *models.PendingChange {
+	if looksLikeBookAsk(text) {
+		return nil
+	}
 	h := harvestText(text, b.today())
 	if len(h.Dates) > 0 && hasAnyDates(trip.Participants) && !datesEqual(h.Dates, allStoredDates(trip.Participants)) {
 		start, end := h.Dates[0], h.Dates[len(h.Dates)-1]

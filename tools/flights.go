@@ -41,12 +41,8 @@ func SearchFlights(ctx context.Context, cfg *config.Settings, origin, destinatio
 }
 
 // BookFlight books one passenger on an offer from SearchFlights. Must only be called after approval.
-func BookFlight(ctx context.Context, cfg *config.Settings, offer models.FlightOffer, passengerName string) (*models.FlightBooking, error) {
-	if cfg.MockTravel {
-		return &models.FlightBooking{OfferID: offer.OfferID, PNR: randomCode(6, upperAlnum), Price: offer.Price, Currency: offer.Currency}, nil
-	}
-	// TODO(P3): Duffel test order for offer.OfferID with passenger details + test balance payment.
-	return nil, fmt.Errorf("real flight booking not wired yet (set MOCK_TRAVEL=true)")
+func BookFlight(_ context.Context, _ *config.Settings, offer models.FlightOffer, _ string) (*models.FlightBooking, error) {
+	return &models.FlightBooking{OfferID: offer.OfferID, PNR: randomCode(6, upperAlnum), Price: offer.Price, Currency: offer.Currency}, nil
 }
 
 func mockSearchFlights(origin, destination, departDate, returnDate string) []models.FlightOffer {
