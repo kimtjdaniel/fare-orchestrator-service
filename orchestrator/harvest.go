@@ -11,18 +11,17 @@ import (
 )
 
 var (
-	isoDateRe     = regexp.MustCompile(`\b(20\d{2}-\d{2}-\d{2})\b`)
-	fromIATA      = regexp.MustCompile(`(?i)\b(?:from|out of)\s+([A-Z]{3})\b`)
-	parenIATA     = regexp.MustCompile(`\(([A-Za-z]{3})\)`)
-	monthDate     = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*[–\-to]+\s*(\d{1,2})(?:st|nd|rd|th)?)?`)
-	dateSpanRe    = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|through|until|–|-)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?`)
-	nightsRe      = regexp.MustCompile(`(?i)\b(\d{1,2})\s*-?\s*(?:days?|nights?)\b`)
-	destToRe      = regexp.MustCompile(`(?i)\b(?:going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
-	tripPlaceRe   = regexp.MustCompile(`(?i)\b(?:plan|book|arrange)\s+(?:a\s+|an\s+)?(?:\d{1,2}\s*-?\s*(?:night|day)s?\s+)?([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+trip\b`)
-	tripToPlaceRe = regexp.MustCompile(`(?i)\b(?:trip to|visit)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
-	insteadToRe   = regexp.MustCompile(`(?i)\b(?:to|for)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+instead\b`)
-	budgetRe      = regexp.MustCompile(`(?i)(?:c\$|cad\s*\$?|\$)\s*([\d,]+)|budget[^\d]{0,12}([\d,]+)`)
-	monthOnlyRe   = regexp.MustCompile(`(?i)\b(?:next\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`)
+	isoDateRe   = regexp.MustCompile(`\b(20\d{2}-\d{2}-\d{2})\b`)
+	fromIATA    = regexp.MustCompile(`(?i)\b(?:from|out of)\s+([A-Z]{3})\b`)
+	parenIATA   = regexp.MustCompile(`\(([A-Za-z]{3})\)`)
+	monthDate   = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s*[–\-to]+\s*(\d{1,2})(?:st|nd|rd|th)?)?`)
+	dateSpanRe  = regexp.MustCompile(`(?i)\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?\s*(?:to|through|until|–|-)\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:st|nd|rd|th)?`)
+	nightsRe    = regexp.MustCompile(`(?i)\b(\d{1,2})\s*-?\s*(?:days?|nights?)\b`)
+	destToRe    = regexp.MustCompile(`(?i)\b(?:going to|go to|fly(?:ing)? to|change (?:the )?destination to)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)`)
+	tripPlaceRe = regexp.MustCompile(`(?i)\b(?:plan|book|arrange)\s+(?:a\s+|an\s+)?(?:\d{1,2}\s*-?\s*(?:night|day)s?\s+)?([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+trip\b`)
+	insteadToRe = regexp.MustCompile(`(?i)\b(?:to|for)\s+([A-Za-z][A-Za-z]+(?:\s+[A-Za-z][A-Za-z]+)?)\s+instead\b`)
+	budgetRe    = regexp.MustCompile(`(?i)(?:c\$|cad\s*\$?|\$)\s*([\d,]+)|budget[^\d]{0,12}([\d,]+)`)
+	monthOnlyRe = regexp.MustCompile(`(?i)\b(?:next\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b`)
 )
 
 var monthNum = map[string]time.Month{
@@ -36,9 +35,6 @@ var cityAirport = map[string]string{
 	"vancouver": "YVR", "toronto": "YYZ", "calgary": "YYC", "edmonton": "YEG",
 	"montreal": "YUL", "ottawa": "YOW", "winnipeg": "YWG", "halifax": "YHZ",
 	"victoria": "YYJ", "kelowna": "YLW", "seattle": "SEA", "portland": "PDX",
-	"london": "LHR", "paris": "CDG", "tokyo": "NRT", "japan": "NRT", "osaka": "KIX",
-	"rome": "FCO", "naples": "NAP", "barcelona": "BCN", "madrid": "MAD", "lisbon": "LIS",
-	"beijing": "PEK", "shanghai": "PVG", "china": "PEK",
 }
 
 type harvestedFacts struct {
@@ -118,14 +114,6 @@ func harvestText(text string, today time.Time) harvestedFacts {
 		}
 	}
 	h.Dates = fillDateRange(h.Dates)
-	if len(h.Dates) == 0 && strings.Contains(low, "weekend") {
-		start, end := comingWeekend(today)
-		if strings.Contains(low, "next weekend") {
-			start = start.AddDate(0, 0, 7)
-			end = end.AddDate(0, 0, 7)
-		}
-		h.Dates = dateList(start, end)
-	}
 	if len(h.Dates) == 0 {
 		h.Dates = monthOnlyDates(text, today)
 	}
@@ -293,16 +281,6 @@ func parseDestination(text string) string {
 			return dest
 		}
 	}
-	if m := tripToPlaceRe.FindStringSubmatch(text); len(m) == 2 {
-		if dest := cleanPlaceName(m[1]); dest != "" {
-			return dest
-		}
-	}
-	for _, city := range []string{"paris", "lisbon", "london", "rome", "barcelona", "madrid", "berlin", "amsterdam", "prague", "tokyo", "seoul", "tel aviv"} {
-		if strings.Contains(low, city) {
-			return strings.ToUpper(city[:1]) + city[1:]
-		}
-	}
 	return ""
 }
 
@@ -354,31 +332,15 @@ func cleanPlaceName(raw string) string {
 	}
 	skip := map[string]bool{
 		"the": true, "our": true, "this": true, "that": true, "instead": true,
-		"a": true, "an": true, "my": true, "your": true,
 		"dates": true, "date": true, "budget": true, "origin": true, "flight": true, "flights": true,
 		"option": true, "options": true, "search": true, "stay": true, "hotel": true, "hotels": true,
 		"vibe": true, "trip": true, "city": true, "cities": true, "group": true, "everyone": true,
 		"pricing": true, "price": true, "fare": true, "fares": true, "place": true, "places": true,
-		"what": true, "please": true, "again": true, "plan": true, "run": true, "through": true,
-		"me": true, "us": true, "here": true, "details": true,
-		"for": true, "in": true, "on": true, "to": true,
 	}
-	fields := strings.Fields(s)
-	for len(fields) > 0 && skip[strings.ToLower(fields[0])] {
-		fields = fields[1:]
-	}
-	for len(fields) > 1 && skip[strings.ToLower(fields[len(fields)-1])] {
-		fields = fields[:len(fields)-1]
-	}
-	if len(fields) == 0 || skip[strings.ToLower(fields[0])] {
+	if skip[low] {
 		return ""
 	}
-	for _, f := range fields {
-		if skip[strings.ToLower(f)] {
-			return ""
-		}
-	}
-	return strings.Join(fields, " ")
+	return s
 }
 
 func datesEqual(a, b []string) bool {

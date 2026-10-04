@@ -36,7 +36,6 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		return trip, m, false, nil
 	}
 	text := strings.TrimSpace(b.mentionRe.ReplaceAllString(m.Text, ""))
-
 	if pending == nil && looksLikeTripActivityEdit(trip, text) {
 		return trip, m, false, nil
 	}
@@ -54,9 +53,6 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 	// for a search or approval of the previous plan.
 	if m.Tagged && quotedText(m) == "" && isStandaloneNewTripRequest(text) {
 		return trip, m, true, b.startNewTrip(ctx, trip, m, sentAt)
-	}
-	if looksLikePlanRecap(text) || (looksLikeAdvisorAsk(text) && !looksLikeNewTripRequest(text) && !looksLikeCancelBooking(text) && !looksLikeReplan(text)) {
-		return trip, m, false, nil
 	}
 
 	history, err := b.Store.GetMessages(ctx, m.GroupID, trip.HistoryStart, 20, true)
@@ -112,9 +108,6 @@ func (b *Brain) routeTripMessage(ctx context.Context, trip *models.Trip, m model
 		}
 	}
 	if action == "new_trip" {
-		if looksLikePlanRecap(text) || (looksLikeAdvisorAsk(text) && !looksLikeNewTripRequest(text)) {
-			return trip, m, false, nil
-		}
 		return trip, m, true, b.startNewTrip(ctx, trip, m, sentAt)
 	}
 	return trip, m, false, nil

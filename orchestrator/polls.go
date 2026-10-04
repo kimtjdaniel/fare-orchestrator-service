@@ -90,6 +90,9 @@ func (b *Brain) shareLiveSearch(ctx context.Context, trip *models.Trip, sessionI
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
+	if trip.State != models.Searching && trip.State != models.BookingState && trip.State != models.AwaitingApproval && trip.State != models.Booked {
+		return b.say(ctx, trip.GroupID, "I'll send the live search page after the group finalizes the plan.", nil)
+	}
 	return b.shareLiveSearch(ctx, trip, "")
 }
 
@@ -101,16 +104,19 @@ func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string
 }
 
 func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen models.Option, itin map[string]any, people []models.Participant) error {
-	url := b.tripPageURL(ctx, trip, "")
-	if err := b.say(ctx, trip.GroupID, formatting.SummaryMessage(chosen, itin, people, trip.ID, url), nil); err != nil {
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"last_poll": "", "pending_approver": ""})
+	if err != nil {
 		return err
 	}
-	if url != "" {
-		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"shared_dashboard": true}); err != nil {
-			return err
-		}
+	if updated != nil {
+		trip = updated
 	}
-	return b.maybeAskPayer(ctx, trip, false)
+	return b.shareItinerary(ctx, trip)
+}
+
+func (b *Brain) shareItinerary(ctx context.Context, trip *models.Trip) error {
+	url := b.tripPageURL(ctx, trip, "")
+	return b.say(ctx, trip.GroupID, formatting.SummaryMessage(models.Option{}, nil, nil, trip.ID, url), nil)
 }
 
 func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []models.Participant) error {
@@ -144,24 +150,9 @@ func (b *Brain) maybeAskPayer(ctx context.Context, trip *models.Trip, force bool
 	return nil
 }
 
-// requestBooking is the single entry point for "yes, book it" — a vote, a tap, or a typed yes.
-// Booking charges real money against whoever the split names as payer, so it refuses to proceed
-// until a payer is designated; otherwise it parks the approval in PendingApprover and asks.
+// Legacy booking replies return the completed itinerary.
 func (b *Brain) requestBooking(ctx context.Context, trip *models.Trip, approver string) error {
-	if hasDesignatedPayer(trip.Participants) {
-		return b.book(ctx, trip, approver)
-	}
-	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"pending_approver": approver})
-	if err != nil {
-		return err
-	}
-	if updated != nil {
-		trip = updated
-	}
-	if err := b.say(ctx, trip.GroupID, "Before I book this — who's covering it?", nil); err != nil {
-		return err
-	}
-	return b.maybeAskPayer(ctx, trip, true)
+	return b.shareItinerary(ctx, trip)
 }
 
 // resumeBookingIfPending finishes a booking that was approved before a payer was designated,
@@ -335,12 +326,7 @@ func (b *Brain) helpDecide(ctx context.Context, trip *models.Trip, m models.Inco
 	case trip.State == models.AwaitingChoice && len(trip.Options) >= 2:
 		return b.pollOptions(ctx, trip, trip.Options)
 	case trip.State == models.AwaitingApproval:
-		url := b.tripPageURL(ctx, trip, "")
-		text := "Your plan is on the dashboard. Booking links are filled in — you confirm the card."
-		if url != "" {
-			text += "\n" + url
-		}
-		return b.say(ctx, trip.GroupID, text, nil)
+		return b.shareItinerary(ctx, trip)
 	default:
 		return b.askBudget(ctx, trip)
 	}
@@ -462,29 +448,6 @@ func dateList(start, end time.Time) []string {
 	return out
 }
 
-func (b *Brain) humanPollReady(trip *models.Trip, vote models.PollVote) bool {
-	hosts := hostIDs(vote.AgentID, vote.AgentIDs...)
-	if isHost(vote.VoterID, hosts) || strings.TrimSpace(vote.VoterID) == "" || len(vote.SelectedOptions) == 0 {
-		return false
-	}
-	key := vote.GroupID + "\n" + vote.PollMessageID
-	b.ballotMu.Lock()
-	defer b.ballotMu.Unlock()
-	if b.ballots == nil {
-		b.ballots = map[string]map[string][]string{}
-	}
-	if b.ballots[key] == nil {
-		b.ballots[key] = map[string][]string{}
-	}
-	b.ballots[key][vote.VoterID] = vote.SelectedOptions
-	needed := pollVotersNeeded(trip, nil, hosts)
-	if len(needed) <= 1 || distinctVoters(b.ballots[key], hosts) >= len(needed) {
-		delete(b.ballots, key)
-		return true
-	}
-	return false
-}
-
 func (b *Brain) HandlePollVote(ctx context.Context, vote models.PollVote) {
 	if vote.GroupID == "" {
 		return
@@ -509,12 +472,8 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	if trip == nil {
 		return nil
 	}
-	if trip.State == models.Collecting {
-		if findIntakePoll(trip, vote.PollMessageID, vote.PollName) != nil {
-			return b.runIntakePollVote(ctx, trip, vote)
-		}
-		// Old origin/date/budget polls must not restart plan() and its canned replies mid-intake.
-		return nil
+	if trip.State == models.Collecting && isIntakePoll(trip, vote.PollMessageID) {
+		return b.runIntakePollVote(ctx, trip, vote)
 	}
 	if strings.Contains(strings.ToLower(vote.PollName), "paying") {
 		return b.applyPayerVote(ctx, trip, vote, selected)
@@ -523,9 +482,6 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 		return b.handleChangeVote(ctx, trip, vote, selected)
 	}
 	if selected == "" {
-		return nil
-	}
-	if !b.humanPollReady(trip, vote) {
 		return nil
 	}
 	sentAt := time.Now().UTC()

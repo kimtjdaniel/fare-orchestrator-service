@@ -346,24 +346,26 @@ func (b *Brain) applyPendingChange(ctx context.Context, trip *models.Trip, vote 
 func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
 	oldDest := trip.Destination
 	cut := b.replanCutover(ctx, trip.GroupID, m)
-	h := harvestText(m.Text, b.today())
+	recent, _ := b.Store.GetMessages(ctx, trip.GroupID, &cut, 50, false)
+	h := harvestFacts(recent, b.today())
+	h = mergeHarvest(h, harvestText(m.Text, b.today()))
 
 	clear := map[string]any{
-		"destination":             "",
-		"destination_airport":     "",
-		"options":                 []models.Option{},
-		"itinerary":               map[string]any{},
-		"flights":                 []models.Flight{},
-		"accommodations":          []models.Accommodation{},
-		"chosen_option_position":  0,
-		"embarking_date":          "",
-		"returning_date":          "",
-		"approved_by":             "",
-		"pending_change":          (*models.PendingChange)(nil),
-		"history_start":           cut,
-		"asked_dates":             false,
-		"asked_origin":            false,
-		"introduced":              false,
+		"destination":            "",
+		"destination_airport":    "",
+		"options":                []models.Option{},
+		"itinerary":              map[string]any{},
+		"flights":                []models.Flight{},
+		"accommodations":         []models.Accommodation{},
+		"chosen_option_position": 0,
+		"embarking_date":         "",
+		"returning_date":         "",
+		"approved_by":            "",
+		"pending_change":         (*models.PendingChange)(nil),
+		"history_start":          cut,
+		"asked_dates":            false,
+		"asked_origin":           false,
+		"introduced":             false,
 	}
 	if h.Destination != "" {
 		clear["destination"] = h.Destination

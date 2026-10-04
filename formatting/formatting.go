@@ -99,41 +99,10 @@ func OptionsMessage(intro string, options []models.Option, tripID, dashboardURL 
 }
 
 func SummaryMessage(option models.Option, itinerary map[string]any, people []models.Participant, tripID, dashboardURL string) string {
-	spend := computeSpend(asMap(itinerary), len(people))
-	hotel, _ := itinerary["hotel"].(map[string]any)
-	lines := []string{fmt.Sprintf("%s, %s.", option.Destination,
-		Dates(option.EmbarkingDate, option.ReturningDate)), ""}
-
-	if flights, ok := itinerary["flights"].(map[string]any); ok {
-		if out, ok := flights["embarking"].(map[string]any); ok {
-			lines = append(lines, fmt.Sprintf("Out on %v, %v to %v.", out["airline"], out["origin"], out["destination"]))
-		}
-		if ret, ok := flights["returning"].(map[string]any); ok {
-			lines = append(lines, fmt.Sprintf("Back on %v, %v to %v.", ret["airline"], ret["origin"], ret["destination"]))
-		}
-	}
-	if spend.HasFlights {
-		lines = append(lines, spend.FlightLine())
-		if reason := models.SelectedTravelReason(itinerary, "flight"); reason != "" {
-			lines = append(lines, "Why this flight: "+reason)
-		}
-	}
-	if spend.HasHotel {
-		lines = append(lines, spend.HotelLine(hotel, option.DurationNights))
-		if reason := models.SelectedTravelReason(itinerary, "hotel"); reason != "" {
-			lines = append(lines, "Why this stay: "+reason)
-		}
-	}
-	if spend.Ok() {
-		lines = append(lines, "", spend.TotalLine(), spend.FoodLine())
-	}
-	lines = append(lines, "")
-	lines = append(lines, "The full plan is on your dashboard — fare, stay, day by day, and what each person owes.")
-	lines = append(lines, "Open a booking link when you're ready. Dates and guests are already filled in. You confirm the card, so payment stays in your hands.")
 	if link := strings.TrimSpace(dashboardURL); link != "" {
-		lines = append(lines, "", link)
+		return "Here's your itinerary:\n" + link + "\n\nThank you!"
 	}
-	return strings.Join(lines, "\n")
+	return "Your itinerary is ready. Thank you!"
 }
 
 func ConfirmationMessage(destination, embarkingPNR, returningPNR, hotelRef string, split tools.Split) string {
@@ -165,7 +134,7 @@ I can:
 - pick restaurants that match how you eat, with map pins
 - send a Google Maps pin for the hotel
 - keep a locked quote so I don't invent prices
-- ask who's putting the card down and split the rest
+- share your itinerary link when the plan is ready
 
 Tag me or reply to me. Anytime say "introduce yourself" if you want this recap, "what's locked" for the current quote, or "where should we eat" for dinner spots.`
 }
@@ -311,7 +280,7 @@ func PlanConfirm(trip *models.Trip) string {
 	if payer != "" {
 		lines = append(lines, payer+" is covering the group spend, then you settle up.")
 	} else {
-		lines = append(lines, "Payer not chosen yet — we can pick that before booking.")
+		lines = append(lines, "")
 	}
 	if note := strings.TrimSpace(trip.BudgetNote); note != "" {
 		lines = append(lines, "Budget: "+note+".")
@@ -408,11 +377,11 @@ func LockedStatus(trip *models.Trip) string {
 
 	switch trip.State {
 	case models.AwaitingApproval:
-		lines = append(lines, "Waiting on yes/no to book.")
+		lines = append(lines, "Your itinerary is ready.")
 	case models.AwaitingChoice:
 		lines = append(lines, "Waiting on a 1, 2, or 3 for the destination.")
 	case models.Booked:
-		lines = append(lines, "Already booked (sandbox).")
+		lines = append(lines, "Your itinerary is ready.")
 	}
 	return strings.Join(lines, "\n")
 }

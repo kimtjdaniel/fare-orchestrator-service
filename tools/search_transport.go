@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -183,7 +184,38 @@ func runSearchSocket(ctx context.Context, cfg *config.Settings, agent, url strin
 }
 func serviceError(agent string, result map[string]any) error {
 	if value, ok := result["error"].(map[string]any); ok {
-		if message, ok := value["message"].(string); ok && message != "" {
+		message := searchRecordText(value["message"])
+		if code := searchRecordText(value["code"]); code != "" {
+			if message != "" {
+				message = code + ": " + message
+			} else {
+				message = code
+			}
+		}
+		var details []string
+		if rows, ok := value["details"].([]any); ok {
+			for _, raw := range rows {
+				detail, ok := raw.(map[string]any)
+				if !ok {
+					continue
+				}
+				text := searchRecordText(detail["message"])
+				if text == "" {
+					continue
+				}
+				if field := searchRecordText(detail["field"]); field != "" {
+					text = field + ": " + text
+				}
+				details = append(details, text)
+			}
+		}
+		if len(details) > 0 {
+			if message != "" {
+				message += " "
+			}
+			message += strings.Join(details, "; ")
+		}
+		if message != "" {
 			return fmt.Errorf("%s search: %s", agent, message)
 		}
 	}
