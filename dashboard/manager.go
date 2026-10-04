@@ -297,6 +297,7 @@ func (m *Manager) Emit(ctx context.Context, id, kind string, payload map[string]
 			s.Recordings = map[string]map[string]any{}
 		}
 		agent, _ := payload["agentType"].(string)
+		// Persist the full source list, including partial failures, for REST and reconnects.
 		s.Recordings[agent] = payload
 	case "planning.started":
 		s.Planning = "running"

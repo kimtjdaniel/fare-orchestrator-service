@@ -46,11 +46,21 @@ func SearchHotels(ctx context.Context, cfg *config.Settings, city, checkIn, chec
 			if !ok {
 				continue
 			}
-			var rating *float64
-			if n, ok := row["rating"].(float64); ok {
-				rating = &n
+			source := searchRecordText(row["source"])
+			if source == "" {
+				source = "booking_com" // Older hotel Lambda records contain only Booking.com offers.
 			}
-			offers = append(offers, models.HotelOffer{OfferID: fmt.Sprintf("%s-%d", searchRecordText(result["search_id"]), i), Name: searchRecordText(row["name"]), City: city, CheckIn: checkIn, CheckOut: checkOut, PricePerNight: searchRecordNumber(row["total_price"]) / float64(nights), TotalPrice: searchRecordNumber(row["total_price"]), Currency: searchRecordText(row["currency"]), Rating: rating, CheckoutURL: searchRecordText(row["url"])})
+			offers = append(offers, models.HotelOffer{
+				OfferID: fmt.Sprintf("%s-%d", searchRecordText(result["search_id"]), i),
+				Name:    searchRecordText(row["name"]), City: city, CheckIn: checkIn, CheckOut: checkOut,
+				PricePerNight: searchRecordNumber(row["total_price"]) / float64(nights),
+				TotalPrice:    searchRecordNumber(row["total_price"]), Currency: searchRecordText(row["currency"]),
+				Rating: searchRecordOptionalNumber(row["rating"]), CheckoutURL: searchRecordText(row["url"]),
+				Source: source, PropertyType: searchRecordText(row["property_type"]),
+				OriginalRating:      searchRecordOptionalNumber(row["original_rating"]),
+				OriginalRatingScale: searchRecordOptionalNumber(row["original_rating_scale"]),
+				PriceNote:           searchRecordText(row["price_note"]),
+			})
 		}
 		sort.Slice(offers, func(i, j int) bool { return offers[i].TotalPrice < offers[j].TotalPrice })
 		return offers, nil
@@ -70,7 +80,7 @@ func SearchHotels(ctx context.Context, cfg *config.Settings, city, checkIn, chec
 	for _, s := range seeds {
 		rating := s.rating
 		offers = append(offers, models.HotelOffer{
-			OfferID: "mock_hotel_" + s.slug, Name: s.name, City: city,
+			OfferID: "mock_hotel_" + s.slug, Name: s.name, City: city, Source: "mock", PropertyType: "hotel",
 			CheckIn: checkIn, CheckOut: checkOut,
 			PricePerNight: s.nightly, TotalPrice: s.nightly * float64(nights), Currency: "CAD",
 			Rating: &rating, ImageURL: s.image,

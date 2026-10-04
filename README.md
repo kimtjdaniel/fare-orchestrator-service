@@ -294,16 +294,54 @@ failure does not discard valid travel results. If no public URL is configured,
 the direct Lambda response still works; per-request callbacks are disabled.
 
 `flight_search.recording.completed` and `hotel_search.recording.completed` events
-carry `searchId`, `recordingUrl`, `recordingError`, and `deliveryError`. They mean
-recording processing has finished; check `recordingUrl` / `recordingError` for
-upload success. The dashboard persists this metadata under `recordings.flight`
-and `recordings.hotel` for reconnects, including failed searches.
+carry `agentType`, `searchId`, `status`, legacy `recordingUrl` / `replayUrl`,
+`recordingError`, `deliveryError`, and `sources`. They mean recording processing
+has finished; a successful search can still have failed recording uploads.
+`sources` contains one entry for each Lambda `origins` record:
+
+```json
+{
+  "website": "airbnb",
+  "origin": null,
+  "status": "complete",
+  "error": null,
+  "recordingUrl": "https://example.com/airbnb.mp4",
+  "replayUrl": "https://example.com/airbnb-replay",
+  "recordingError": null,
+  "browserSessionId": "browser-session-id",
+  "recordings": [{"url": "https://example.com/airbnb.mp4", "filename": "airbnb.mp4"}]
+}
+```
+
+Hotel sources use `website` (`booking_com` or `airbnb`); flight entries may use
+`origin` instead. Optional absent metadata is null. `recordings` preserves the
+Lambda's full recording list; inspect each source's `status`, `error`, and
+`recordingError` independently. Legacy single-source records have an empty
+`sources` array and still expose the original top-level links. The hotel Lambda
+chooses Booking.com's top-level legacy link when available, falling back to
+Airbnb. The dashboard saves the entire event payload under `recordings.flight`
+and `recordings.hotel` in every REST / WebSocket session snapshot, including
+partial or failed searches. Mongo stores those links for reconnects and process
+restarts; in-memory storage loses them on restart.
 
 Once both searches provide offers, Gemini compares all returned flights and
-hotels against group preferences, timing, ratings, and per-person costs. Its
+hotels against group preferences, timing, ratings, and per-person costs. The
+hotel Lambda combines its cheapest eight Booking.com and cheapest eight Airbnb
+stays into `hotels`, with a separately reported status and recording per source.
+The orchestrator compares all supplied rows, sorted by total-stay price; a
+`partially_complete` result still provides offers from the successful source.
+Offers retain `source`, `property_type`, `original_rating`,
+`original_rating_scale`, and `price_note`. Real offer ratings are normalized to
+10; Airbnb originals are on a 5-point scale. Gemini sees source and property type
+along with the rating and price caveats, and receives no recording links. Its
 selected IDs are validated against those actual offers. The saved itinerary
 includes `selection_reason`; the dashboard plan includes the chosen IDs and
-`selectionReason`. Gemini then generates activities around the selected travel
+`selectionReason`. The chosen offer and the accommodation stored on the trip
+retain source, property type, original rating and scale, and price note. Dashboard
+hotel rows expose `source`, `propertyType`, `originalRating`,
+`originalRatingScale`, and `priceNote`; final plans expose `hotelSource`,
+`hotelPropertyType`, `hotelOriginalRating`, `hotelOriginalRatingScale`, and
+`hotelPriceNote`. Gemini then generates activities around the selected travel
 plan. Selection or activity-generation errors fail the dashboard session and
 return the trip to destination choice for a retry. Plans still require group
 approval before any booking.
@@ -311,3 +349,10 @@ approval before any booking.
 Deploy the updated flight and hotel Lambda code in `travel-search-services` to
 accept `callback_url`. This is still a synchronous Lambda invocation with a
 completion callback, not an asynchronous job-submission endpoint.
+
+The default hotel Function URL in `config/config.go` and `.env.example` is
+`https://qhz6talpesw4nfnbipkxnxxsq40ivfah.lambda-url.us-west-2.on.aws/`.
+A local `.env` with `MOCK_TRAVEL=true` uses sample stays and never invokes that
+Lambda. Set `MOCK_TRAVEL=false` and leave `HOTEL_SERVICE_WS_URL` empty to invoke
+the deployed hotel service over HTTP. Its deployed code must include the
+multi-source hotel search for Airbnb offers and recordings to appear.

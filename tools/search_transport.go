@@ -49,7 +49,7 @@ func runSearchService(ctx context.Context, cfg *config.Settings, agent string, r
 	defer func() {
 		if result != nil {
 			if events, ok := ctx.Value(searchEventsKey{}).(searchEvents); ok && events.emit != nil {
-				events.emit(agent+"_search.recording.completed", map[string]any{"agentType": agent, "searchId": result["search_id"], "recordingUrl": result["recording_url"], "replayUrl": searchReplayURL(result), "recordingError": result["recording_error"], "deliveryError": result["delivery_error"]})
+				events.emit(agent+"_search.recording.completed", searchRecordingMetadata(agent, result))
 			}
 		}
 	}()
@@ -212,3 +212,38 @@ func searchReplayURL(result map[string]any) string {
 
 func searchRecordText(value any) string    { s, _ := value.(string); return s }
 func searchRecordNumber(value any) float64 { n, _ := value.(float64); return n }
+
+// Keep recording delivery separate from the offers used by Gemini. Each source can
+// finish or fail independently; its links and errors survive in dashboard snapshots.
+func searchRecordingMetadata(agent string, result map[string]any) map[string]any {
+	sources := make([]map[string]any, 0)
+	if origins, ok := result["origins"].([]any); ok {
+		for _, value := range origins {
+			origin, ok := value.(map[string]any)
+			if !ok {
+				continue
+			}
+			sources = append(sources, map[string]any{
+				"website": origin["website"], "origin": origin["origin"],
+				"status": origin["status"], "error": origin["error"],
+				"recordingUrl": origin["recording_url"], "replayUrl": origin["replay_url"],
+				"recordingError":   origin["recording_error"],
+				"browserSessionId": origin["skyvern_browser_session_id"], "recordings": origin["recordings"],
+			})
+		}
+	}
+	return map[string]any{
+		"agentType": agent, "searchId": result["search_id"], "status": result["status"],
+		"recordingUrl": result["recording_url"], "replayUrl": searchReplayURL(result),
+		"recordingError": result["recording_error"], "deliveryError": result["delivery_error"],
+		"sources": sources,
+	}
+}
+
+func searchRecordOptionalNumber(value any) *float64 {
+	n, ok := value.(float64)
+	if !ok {
+		return nil
+	}
+	return &n
+}

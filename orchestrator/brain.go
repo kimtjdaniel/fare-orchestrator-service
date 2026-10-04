@@ -1527,6 +1527,8 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	accommodations := []models.Accommodation{{
 		BookingStatus: models.StatusIncomplete, CheckInDate: ed, CheckOutDate: rd,
 		Rating: hotel.Rating, Costs: &hotel.TotalPrice, BookingURL: hotel.CheckoutURL,
+		Source: hotel.Source, PropertyType: hotel.PropertyType, OriginalRating: hotel.OriginalRating,
+		OriginalRatingScale: hotel.OriginalRatingScale, PriceNote: hotel.PriceNote,
 	}}
 
 	opts := append([]models.Option(nil), trip.Options...)
@@ -1768,6 +1770,8 @@ func (b *Brain) book(ctx context.Context, trip *models.Trip, approver string) er
 		accommodations = []models.Accommodation{{
 			BookingStatus: models.StatusIncomplete, CheckInDate: ci, CheckOutDate: co,
 			Rating: hotel.Rating, Costs: &hotel.TotalPrice, BookingURL: hotel.CheckoutURL,
+			Source: hotel.Source, PropertyType: hotel.PropertyType, OriginalRating: hotel.OriginalRating,
+			OriginalRatingScale: hotel.OriginalRatingScale, PriceNote: hotel.PriceNote,
 		}}
 	}
 	acc := &accommodations[0]

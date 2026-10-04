@@ -241,13 +241,18 @@ type Flight struct {
 
 // Accommodation is the group's shared stay.
 type Accommodation struct {
-	BookingStatus BookingStatus `json:"booking_status" bson:"booking_status"`
-	CheckInDate   time.Time     `json:"check_in_date" bson:"check_in_date"`
-	CheckOutDate  time.Time     `json:"check_out_date" bson:"check_out_date"`
-	Rating        *float64      `json:"rating,omitempty" bson:"rating,omitempty"`
-	Costs         *float64      `json:"costs,omitempty" bson:"costs,omitempty"`
-	BookingURL    string        `json:"booking_url,omitempty" bson:"booking_url,omitempty"`
-	ProviderRef   string        `json:"provider_ref,omitempty" bson:"provider_ref,omitempty"` // confirmation number once booked
+	Source              string        `json:"source,omitempty" bson:"source,omitempty"`
+	PropertyType        string        `json:"property_type,omitempty" bson:"property_type,omitempty"`
+	OriginalRating      *float64      `json:"original_rating,omitempty" bson:"original_rating,omitempty"`
+	OriginalRatingScale *float64      `json:"original_rating_scale,omitempty" bson:"original_rating_scale,omitempty"`
+	PriceNote           string        `json:"price_note,omitempty" bson:"price_note,omitempty"`
+	BookingStatus       BookingStatus `json:"booking_status" bson:"booking_status"`
+	CheckInDate         time.Time     `json:"check_in_date" bson:"check_in_date"`
+	CheckOutDate        time.Time     `json:"check_out_date" bson:"check_out_date"`
+	Rating              *float64      `json:"rating,omitempty" bson:"rating,omitempty"`
+	Costs               *float64      `json:"costs,omitempty" bson:"costs,omitempty"`
+	BookingURL          string        `json:"booking_url,omitempty" bson:"booking_url,omitempty"`
+	ProviderRef         string        `json:"provider_ref,omitempty" bson:"provider_ref,omitempty"` // confirmation number once booked
 }
 
 // Trip is a SINGLETON per WhatsApp group: ID == GroupID, one document reused for every trip cycle
@@ -373,17 +378,22 @@ type FlightOffer struct {
 }
 
 type HotelOffer struct {
-	OfferID       string   `json:"offer_id"`
-	Name          string   `json:"name"`
-	City          string   `json:"city"`
-	CheckIn       string   `json:"check_in"`
-	CheckOut      string   `json:"check_out"`
-	PricePerNight float64  `json:"price_per_night"`
-	TotalPrice    float64  `json:"total_price"`
-	Currency      string   `json:"currency"`
-	Rating        *float64 `json:"rating,omitempty"`
-	CheckoutURL   string   `json:"checkout_url,omitempty"`
-	ImageURL      string   `json:"image_url,omitempty"`
+	Source              string   `json:"source,omitempty"`
+	PropertyType        string   `json:"property_type,omitempty"`
+	OriginalRating      *float64 `json:"original_rating,omitempty"`
+	OriginalRatingScale *float64 `json:"original_rating_scale,omitempty"`
+	PriceNote           string   `json:"price_note,omitempty"`
+	OfferID             string   `json:"offer_id"`
+	Name                string   `json:"name"`
+	City                string   `json:"city"`
+	CheckIn             string   `json:"check_in"`
+	CheckOut            string   `json:"check_out"`
+	PricePerNight       float64  `json:"price_per_night"`
+	TotalPrice          float64  `json:"total_price"`
+	Currency            string   `json:"currency"`
+	Rating              *float64 `json:"rating,omitempty"`
+	CheckoutURL         string   `json:"checkout_url,omitempty"`
+	ImageURL            string   `json:"image_url,omitempty"`
 }
 
 type FlightBooking struct {
