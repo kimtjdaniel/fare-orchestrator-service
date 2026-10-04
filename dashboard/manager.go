@@ -63,15 +63,25 @@ type Manager struct {
 func New(st store.Store) *Manager { return &Manager{store: st, groups: map[string]*group{}} }
 
 func (m *Manager) load(ctx context.Context, id string) (*group, error) {
+	id = models.CanonicalGroupID(id)
 	if g := m.groups[id]; g != nil {
 		return g, nil
 	}
-	g := &group{Sessions: []*Snapshot{}, subscribers: map[chan []byte]bool{}}
-	saved, err := m.store.GetWhatsAppSession(ctx, "dashboard:"+id)
-	if err != nil {
-		return nil, err
+	for _, alias := range models.GroupIDKeys(id) {
+		if g := m.groups[alias]; g != nil {
+			m.groups[id] = g
+			return g, nil
+		}
 	}
-	if saved != nil {
+	g := &group{Sessions: []*Snapshot{}, subscribers: map[chan []byte]bool{}}
+	for _, alias := range models.GroupIDKeys(id) {
+		saved, err := m.store.GetWhatsAppSession(ctx, "dashboard:"+alias)
+		if err != nil {
+			return nil, err
+		}
+		if saved == nil {
+			continue
+		}
 		raw, err := json.Marshal(saved.Data)
 		if err != nil {
 			return nil, err
@@ -79,6 +89,7 @@ func (m *Manager) load(ctx context.Context, id string) (*group, error) {
 		if err = json.Unmarshal(raw, g); err != nil {
 			return nil, err
 		}
+		break
 	}
 	if g.Sessions == nil {
 		g.Sessions = []*Snapshot{}

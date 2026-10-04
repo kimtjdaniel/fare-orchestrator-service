@@ -96,12 +96,13 @@ func (s *MemoryStore) ListTrips(ctx context.Context) ([]*models.Trip, error) {
 func (s *MemoryStore) GetTrip(ctx context.Context, tripID string) (*models.Trip, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t, ok := s.trips[tripID]
-	if !ok {
-		return nil, nil
+	for _, id := range models.GroupIDKeys(tripID) {
+		if t, ok := s.trips[id]; ok {
+			cp := *t
+			return &cp, nil
+		}
 	}
-	cp := *t
-	return &cp, nil
+	return nil, nil
 }
 
 func (s *MemoryStore) ResetTrip(ctx context.Context, tripID, groupName string) (*models.Trip, error) {

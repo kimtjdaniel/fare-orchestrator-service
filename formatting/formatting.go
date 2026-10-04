@@ -58,7 +58,7 @@ func dashboardBase(dashboardURL string) string {
 
 func DashboardLink(dashboardURL, groupID string) string {
 	base := dashboardBase(dashboardURL)
-	groupID = strings.TrimSpace(groupID)
+	groupID = models.GroupPathID(groupID)
 	if base == "" || groupID == "" {
 		return ""
 	}
