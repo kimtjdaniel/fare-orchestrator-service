@@ -29,6 +29,7 @@ import (
 // unsatisfied one in this order is what gets asked next.
 const (
 	fAttendance     = "attendance"
+	fChildren       = "children"
 	fOrigin         = "origin"
 	fDateWindow     = "date_window"
 	fExactDates     = "exact_dates"
@@ -37,6 +38,8 @@ const (
 	fVibe           = "vibe"
 	fDestination    = "destination"
 	fConstraints    = "constraints"
+	fPackage        = "package"
+	fRevise         = "revise_intake"
 )
 
 const llmCallTimeout = 45 * time.Second
@@ -51,13 +54,7 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 		trip = b.seedIntake(ctx, trip, m)
 	}
 
-	hadAttendance := anyAttendanceKnown(trip)
 	trip = b.applyChatShortcuts(ctx, trip, m)
-	if !hadAttendance && anyAttendanceKnown(trip) {
-		ex := &intakeExtraction{TripIntent: "none", AnswersPendingQuestion: true}
-		trip, _ = b.applyHarvestedTripFacts(ctx, trip, m.Text)
-		return b.continueIntake(ctx, trip, ex)
-	}
 
 	extraction, err := b.extractIntake(ctx, trip, m.Text, m.SenderID)
 	if err != nil {
@@ -70,7 +67,7 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 		if err != nil {
 			return err
 		}
-		return b.writeAndSend(ctx, trip, "CANCEL", "the group asked to stop planning", nil)
+		return b.writeAndSend(ctx, trip, "CANCEL", "the group asked to stop planning. One short line.", "")
 	}
 
 	harvestedDates := false
@@ -90,11 +87,17 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 		}
 	}
 	trip = b.applyChatShortcuts(ctx, trip, m)
-	if anyAttendanceKnown(trip) && trip.PendingQuestion != nil && trip.PendingQuestion.Field == fAttendance {
-		if extraction == nil {
-			extraction = &intakeExtraction{TripIntent: "none"}
-		}
+	if extraction == nil {
+		extraction = &intakeExtraction{TripIntent: "none"}
+	}
+	if trip.PendingQuestion != nil && fieldSatisfied(trip, trip.PendingQuestion.Field) {
 		extraction.AnswersPendingQuestion = true
+	}
+	if anyAttendanceKnown(trip) && trip.PendingQuestion != nil && trip.PendingQuestion.Field == fAttendance {
+		extraction.AnswersPendingQuestion = true
+	}
+	if looksLikeAdvisorAsk(m.Text) {
+		return b.answerDuringIntake(ctx, trip, m)
 	}
 
 	return b.continueIntake(ctx, trip, extraction)
@@ -104,7 +107,7 @@ func (b *Brain) runIntakeTurn(ctx context.Context, trip *models.Trip, m models.I
 // poll_message_id matches one of trip.IntakePolls (i.e. it's ours, not a payer/finalize poll from
 // the existing AwaitingChoice-onward machinery).
 func (b *Brain) runIntakePollVote(ctx context.Context, trip *models.Trip, vote models.PollVote) error {
-	poll := findIntakePoll(trip, vote.PollMessageID)
+	poll := findIntakePoll(trip, vote.PollMessageID, vote.PollName)
 	if poll == nil {
 		return nil
 	}
@@ -113,7 +116,10 @@ func (b *Brain) runIntakePollVote(ctx context.Context, trip *models.Trip, vote m
 	complete := pollComplete(trip, poll)
 	stale := time.Since(poll.CreatedAt) > pollWaitTimeout
 	if !complete && !stale {
-		return nil // spec §4.3: don't reply to every single vote, wait for completion or staleness
+		return nil
+	}
+	if !complete && poll.Field == fExactDates {
+		return b.writeAndSend(ctx, trip, "ASK", "some people have not picked dates. Ask those people by name. Do not lock a date from the votes so far.", fExactDates)
 	}
 
 	trip = b.closePollAndApply(ctx, trip, poll)
@@ -123,25 +129,36 @@ func (b *Brain) runIntakePollVote(ctx context.Context, trip *models.Trip, vote m
 // isIntakePoll reports whether a poll_message_id belongs to this turn controller (as opposed to
 // the existing finalize/payer polls further down the pipeline).
 func isIntakePoll(trip *models.Trip, pollMessageID string) bool {
-	return findIntakePoll(trip, pollMessageID) != nil
+	return findIntakePoll(trip, pollMessageID, "") != nil
 }
 
-// findIntakePoll matches an incoming vote to the open poll it belongs to. The real WhatsApp
-// message id isn't known until the *first* vote arrives (Messenger.SendPoll returns only an
-// error, no id) — so an open poll with no id recorded yet is presumed to be the one and only
-// thing a vote could be answering (the controller never has more than one poll open at a time).
-func findIntakePoll(trip *models.Trip, pollMessageID string) *models.IntakePoll {
+// findIntakePoll matches a vote to the open intake poll it belongs to. A vote only binds to a
+// poll with an empty id when that is the single open poll — otherwise an older poll's vote would
+// advance the question we just asked.
+func findIntakePoll(trip *models.Trip, pollMessageID, pollName string) *models.IntakePoll {
 	if trip == nil {
 		return nil
 	}
+	var open []*models.IntakePoll
 	for i := range trip.IntakePolls {
 		p := &trip.IntakePolls[i]
 		if p.Closed {
 			continue
 		}
-		if p.PollMessageID == pollMessageID || p.PollMessageID == "" {
+		open = append(open, p)
+		if pollMessageID != "" && p.PollMessageID == pollMessageID {
 			return p
 		}
+	}
+	if name := strings.TrimSpace(pollName); name != "" {
+		for _, p := range open {
+			if strings.EqualFold(strings.TrimSpace(p.Question), name) {
+				return p
+			}
+		}
+	}
+	if len(open) == 1 && open[0].PollMessageID == "" {
+		return open[0]
 	}
 	return nil
 }
@@ -154,33 +171,78 @@ func findIntakePoll(trip *models.Trip, pollMessageID string) *models.IntakePoll 
 func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extraction *intakeExtraction) error {
 	if conflicts := detectConflicts(trip); len(conflicts) > 0 {
 		trip = b.saveConflicts(ctx, trip, conflicts)
-		return b.writeAndSend(ctx, trip, "RESOLVE_CONFLICT", conflicts[0].Description, nil)
+		return b.writeAndSend(ctx, trip, "RESOLVE_CONFLICT", conflicts[0].Description, conflicts[0].Field)
 	}
 	if len(trip.Conflicts) > 0 {
 		trip = b.clearResolvedConflicts(ctx, trip)
 	}
 
+	pendingField := ""
 	if trip.PendingQuestion != nil {
-		pending := trip.PendingQuestion.Field
-		answered := extraction != nil && extraction.AnswersPendingQuestion
-		if fieldSatisfied(trip, pending) || answered {
-			trip = b.closeOpenPollsForField(ctx, trip, pending)
-			trip = b.clearPendingQuestion(ctx, trip)
-		}
+		pendingField = trip.PendingQuestion.Field
+	}
+	if pendingField != "" && fieldSatisfied(trip, pendingField) {
+		trip = b.closeOpenPollsForField(ctx, trip, pendingField)
+		trip = b.clearPendingQuestion(ctx, trip)
 	}
 
-	if extraction != nil && extraction.Approval == "yes" && readyToSearch(trip) {
-		return b.handoffToSearch(ctx, trip)
+	if extraction != nil && extraction.Approval == "yes" && searchEssentials(trip) {
+		pendingPkg := pendingField == fPackage || pendingField == fRevise
+		if pendingPkg || (trip.Intake != nil && trip.Intake.Confirmed) {
+			trip = b.markPackageConfirmed(ctx, trip)
+			return b.handoffToSearch(ctx, trip)
+		}
 	}
 
 	missing := nextMissingField(trip)
 	if missing == "" {
-		return b.confirmReady(ctx, trip)
+		if searchEssentials(trip) {
+			return b.handoffToSearch(ctx, trip)
+		}
+		return nil
 	}
 	if hasOpenIntakePoll(trip, missing) {
 		return nil
 	}
 	return b.askField(ctx, trip, missing)
+}
+
+func (b *Brain) markPackageConfirmed(ctx context.Context, trip *models.Trip) *models.Trip {
+	if trip.Intake == nil {
+		trip.Intake = &models.TripIntake{}
+	}
+	trip.Intake.Confirmed = true
+	trip.Intake.Revision = false
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake": trip.Intake})
+	if err != nil || updated == nil {
+		return trip
+	}
+	return updated
+}
+
+// shouldUseIntake reports whether this trip should keep collecting requirements instead of
+// proposing options from origin and overlapping dates alone.
+func shouldUseIntake(trip *models.Trip) bool {
+	if trip == nil {
+		return false
+	}
+	if trip.State == models.Collecting {
+		return true
+	}
+	if trip.Intake == nil {
+		return false
+	}
+	switch trip.State {
+	case models.Booked, models.BookingState, models.Searching, models.Cancelled:
+		return false
+	default:
+		return !searchEssentials(trip)
+	}
+}
+
+func isoDateOK(s string) bool {
+	_, err := time.Parse("2006-01-02", strings.TrimSpace(s))
+	return err == nil
 }
 
 // ------------------------------------------------------------------ readiness (§4.5)
@@ -189,13 +251,27 @@ func (b *Brain) continueIntake(ctx context.Context, trip *models.Trip, extractio
 // — is the only thing that may be true before a search can start, and even then only after an
 // explicit ✅ (checked by the caller, continueIntake).
 func readyToSearch(trip *models.Trip) bool {
-	return nextMissingField(trip) == ""
+	return searchEssentials(trip) && trip.Intake != nil && trip.Intake.Confirmed
+}
+
+// searchEssentials is the checklist that must be true before any flight or stay search.
+func searchEssentials(trip *models.Trip) bool {
+	if trip == nil || trip.Intake == nil {
+		return false
+	}
+	for _, f := range []string{fAttendance, fOrigin, fExactDates, fBudgetRange, fBudgetIncludes, fDestination} {
+		if !fieldSatisfied(trip, f) {
+			return false
+		}
+	}
+	ed := trip.Intake.ExactDates
+	return ed != nil && isoDateOK(ed.Depart) && isoDateOK(ed.Return)
 }
 
 // nextMissingField returns the first unsatisfied field in spec §4.1's order, or "" if every
 // required field is confirmed/inferred.
 func nextMissingField(trip *models.Trip) string {
-	order := []string{fAttendance, fOrigin, fDateWindow, fExactDates, fBudgetRange, fBudgetIncludes, fVibe, fDestination, fConstraints}
+	order := []string{fAttendance, fChildren, fOrigin, fDateWindow, fExactDates, fBudgetRange, fBudgetIncludes, fVibe, fDestination, fConstraints, fPackage}
 	for _, f := range order {
 		if !fieldSatisfied(trip, f) {
 			return f
@@ -212,7 +288,30 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 	coming := comingParticipants(trip)
 	switch field {
 	case fAttendance:
-		return anyAttendanceKnown(trip) && len(comingParticipants(trip)) >= 1
+		coming := 0
+		unknown := 0
+		for _, p := range trip.Participants {
+			if p.Intake == nil || p.Intake.Attendance == "" || p.Intake.Attendance == "unknown" {
+				unknown++
+				continue
+			}
+			if p.Intake.Attendance == "coming" || p.Intake.Attendance == "maybe" {
+				coming++
+			}
+		}
+		if coming < 1 {
+			return false
+		}
+		if unknown == 0 {
+			return true
+		}
+		// A closed attendance poll means everyone who is going has had a chance to say so.
+		return pollWasAsked(trip, fAttendance) && !hasOpenIntakePoll(trip, fAttendance)
+	case fChildren:
+		if intake.Children.Known() {
+			return true
+		}
+		return !childrenFollowUp(trip)
 	case fOrigin:
 		for _, p := range coming {
 			if p.Intake == nil || !p.Intake.Origin.Known() {
@@ -221,12 +320,12 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 		}
 		return len(coming) > 0
 	case fDateWindow:
-		if intake.ExactDates != nil && intake.ExactDates.Depart != "" && intake.ExactDates.Return != "" {
+		if intake.ExactDates != nil && isoDateOK(intake.ExactDates.Depart) && isoDateOK(intake.ExactDates.Return) {
 			return true
 		}
-		return intake.DateWindow != nil && intake.DateWindow.Earliest != "" && intake.Nights.Min > 0
+		return intake.DateWindow != nil && isoDateOK(intake.DateWindow.Earliest) && intake.Nights.Min > 0
 	case fExactDates:
-		return intake.ExactDates != nil && intake.ExactDates.Depart != "" && intake.ExactDates.Return != ""
+		return intake.ExactDates != nil && isoDateOK(intake.ExactDates.Depart) && isoDateOK(intake.ExactDates.Return)
 	case fBudgetRange:
 		return intake.BudgetPP != nil && intake.BudgetPP.Max > 0
 	case fBudgetIncludes:
@@ -236,9 +335,30 @@ func fieldSatisfied(trip *models.Trip, field string) bool {
 	case fDestination:
 		return intake.Destination.Known()
 	case fConstraints:
-		return true
+		return intake.Constraints.Known()
+	case fPackage:
+		return intake.Confirmed
+	case fRevise:
+		return !intake.Revision
 	}
 	return true
+}
+
+func childrenFollowUp(trip *models.Trip) bool {
+	n := len(comingParticipants(trip))
+	if trip != nil && trip.Intake != nil && trip.Intake.Headcount.Known() {
+		switch v := trip.Intake.Headcount.Value.(type) {
+		case float64:
+			if int(v) > n {
+				n = int(v)
+			}
+		case int:
+			if v > n {
+				n = v
+			}
+		}
+	}
+	return n >= 2
 }
 
 func anyAttendanceKnown(trip *models.Trip) bool {
@@ -430,8 +550,12 @@ func (b *Brain) extractIntake(ctx context.Context, trip *models.Trip, text, send
 		pending = trip.PendingQuestion.Field
 	}
 	system := prompts.IntakeExtractSystem(b.Config.BotName, b.today().Format("2006-01-02"), b.Config.Timezone, roster, tripStateJSON(trip), pending)
+	user := text
+	if recent := b.recentChat(cctx, trip); recent != "(none)" {
+		user = "Recent chat:\n" + recent + "\nLatest message:\n" + text
+	}
 
-	out, err := b.LLM.Structured(cctx, system, []llm.Message{{Role: "user", Content: text}}, toSchema(prompts.IntakeExtract))
+	out, err := b.LLM.Structured(cctx, system, []llm.Message{{Role: "user", Content: user}}, toSchema(prompts.IntakeExtract))
 	if err != nil {
 		return nil, err
 	}
@@ -524,16 +648,18 @@ func (b *Brain) applyHarvestedTripFacts(ctx context.Context, trip *models.Trip, 
 	if intake == nil {
 		intake = &models.TripIntake{}
 	}
-	if intake.ExactDates == nil || intake.ExactDates.Depart == "" {
-		intake.ExactDates = &models.ExactDates{Depart: start, Return: end}
-	}
-	if intake.DateWindow == nil {
+	if intake.DateWindow == nil || intake.DateWindow.Earliest == "" {
 		intake.DateWindow = &models.DateWindow{Earliest: start, Latest: end}
 	}
-	if intake.Nights.Min == 0 {
+	span := len(dates)
+	exact := span > 0 && span <= 8 && isoDateOK(start) && isoDateOK(end)
+	if exact && (intake.ExactDates == nil || !isoDateOK(intake.ExactDates.Depart)) {
+		intake.ExactDates = &models.ExactDates{Depart: start, Return: end}
+	}
+	if intake.Nights.Min == 0 && exact {
 		if t1, err1 := models.ParseDate(start); err1 == nil {
 			if t2, err2 := models.ParseDate(end); err2 == nil {
-				n := int(t2.Sub(t1).Hours()/24 + 0.5)
+				n := int(t2.Sub(t1).Hours() / 24)
 				if n < 1 {
 					n = 1
 				}
@@ -553,8 +679,18 @@ func (b *Brain) applyHarvestedTripFacts(ctx context.Context, trip *models.Trip, 
 }
 
 var (
-	soloTravelerRe  = regexp.MustCompile(`(?i)\b(just me|only me|just myself|i(?:'m| am) the only(?: one| person)?|only (?:one|i)(?:'s| is)? going|solo(?: trip)?)\b`)
-	attendanceYesRe = regexp.MustCompile(`(?i)^\s*(?:@\S+\s+)*(?:yes(?:\s+i\s+can)?|yeah|yep|yup|sure|ok(?:ay)?|i\s+can|i\s+confirm|confirmed|confirm|i'?m\s+in|count\s+me\s+in|just\s+me|only\s+me|coming)[\s!.]*$`)
+	soloTravelerRe   = regexp.MustCompile(`(?i)\b(just me|only me|just myself|i(?:'m| am) the only(?: one| person)?|only (?:one|i)(?:'s| is)? going|solo(?: trip)?)\b`)
+	attendanceYesRe  = regexp.MustCompile(`(?i)^\s*(?:@\S+\s+)*(?:yes(?:\s+i\s+can)?|yeah|yep|yup|sure|ok(?:ay)?|i\s+can|i\s+confirm|confirmed|confirm|i'?m\s+in|count\s+me\s+in|just\s+me|only\s+me|coming)[\s!.]*$`)
+	originCueRe      = regexp.MustCompile(`(?i)\b(from|out of|flying from|fly from|depart(?:ing)? from)\b`)
+	sharedOriginRe   = regexp.MustCompile(`(?i)\b(we all|everyone|all of us|we(?:'re| are) all)\b`)
+	noneAnswerRe     = regexp.MustCompile(`(?i)^\s*(?:none|nope|no|nothing|all good|no constraints?|no preferences?|all adults|no kids|no children|just adults)\b`)
+	kidsCountRe      = regexp.MustCompile(`(?i)\b(\d+)\s*(?:kids?|children|child)\b`)
+	includesFoodRe   = regexp.MustCompile(`(?i)\b(food|activities|everything|all of it|the whole thing)\b`)
+	includesFlightRe = regexp.MustCompile(`(?i)\bflights?\b`)
+	includesStayRe   = regexp.MustCompile(`(?i)\b(hotels?|stay|stays|accommodation)\b`)
+	mentionDatesRe   = regexp.MustCompile(`(?i)\b(dates?|weekend|nights?|when)\b`)
+	mentionBudgetRe  = regexp.MustCompile(`(?i)\bbudget\b|\$|c\$`)
+	mentionDestRe    = regexp.MustCompile(`(?i)\b(destination|city|vibe|where)\b`)
 )
 
 func strongAttendanceYes(text string) bool {
@@ -577,11 +713,15 @@ func (b *Brain) applyChatShortcuts(ctx context.Context, trip *models.Trip, m mod
 		intake = &models.TripIntake{}
 		trip.Intake = intake
 	}
+	pending := ""
+	if trip.PendingQuestion != nil {
+		pending = trip.PendingQuestion.Field
+	}
 	if h.Destination != "" && !intake.Destination.Known() {
 		intake.Destination = models.FieldValue{Value: h.Destination, Confidence: models.Confirmed, UpdatedAt: models.Now()}
 		changed = true
 	}
-	pendingAttendance := trip.PendingQuestion != nil && trip.PendingQuestion.Field == fAttendance
+	pendingAttendance := pending == fAttendance
 	if m.SenderID != "" && (strongAttendanceYes(text) || (pendingAttendance && attendanceYesRe.MatchString(text))) && (!anyAttendanceKnown(trip) || pendingAttendance) {
 		idx := findOrCreateParticipantIndexPtr(trip, m.SenderID)
 		if idx >= 0 {
@@ -599,6 +739,99 @@ func (b *Brain) applyChatShortcuts(ctx context.Context, trip *models.Trip, m mod
 			changed = true
 		}
 	}
+	if (h.City != "" || h.Airport != "") && (pending == fOrigin || originCueRe.MatchString(text)) {
+		label := h.City
+		if label == "" {
+			label = h.Airport
+		}
+		if sharedOriginRe.MatchString(text) {
+			targets := comingParticipants(trip)
+			if len(targets) == 0 {
+				targets = trip.Participants
+			}
+			for _, person := range targets {
+				if setParticipantOrigin(trip, person.WaID, label) {
+					changed = true
+				}
+			}
+		} else if m.SenderID != "" {
+			if setParticipantOrigin(trip, m.SenderID, label) {
+				if m.SenderName != "" {
+					if idx := findOrCreateParticipantIndexPtr(trip, m.SenderID); idx >= 0 && trip.Participants[idx].WhatsAppName == "" {
+						trip.Participants[idx].WhatsAppName = m.SenderName
+					}
+				}
+				changed = true
+			}
+		}
+	}
+	if h.Budget != "" && (intake.BudgetPP == nil || intake.BudgetPP.Max == 0) {
+		if n, ok := parseFirstNumber(h.Budget); ok && n > 0 {
+			bp := intake.BudgetPP
+			if bp == nil {
+				bp = &models.BudgetPP{Currency: "CAD"}
+			}
+			bp.Min, bp.Max = n, n
+			if bp.Currency == "" {
+				bp.Currency = "CAD"
+			}
+			intake.BudgetPP = bp
+			changed = true
+		}
+	}
+	if h.Nights > 0 && intake.Nights.Min == 0 {
+		intake.Nights = models.NightsRange{Min: h.Nights, Max: h.Nights}
+		changed = true
+	}
+	if includes := budgetIncludesFromText(text); len(includes) > 0 && (pending == fBudgetIncludes || intake.BudgetPP == nil || len(intake.BudgetPP.Includes) == 0) {
+		if pending == fBudgetIncludes || includesFlightRe.MatchString(text) {
+			bp := intake.BudgetPP
+			if bp == nil {
+				bp = &models.BudgetPP{Currency: "CAD"}
+			}
+			bp.Includes = includes
+			intake.BudgetPP = bp
+			changed = true
+		}
+	}
+	if pending == fChildren {
+		if v, ok := childrenFromText(text); ok {
+			intake.Children = models.FieldValue{Value: v, Confidence: models.Confirmed, UpdatedAt: models.Now()}
+			changed = true
+		}
+	}
+	if pending == fConstraints && text != "" {
+		val := text
+		if noneAnswerRe.MatchString(text) {
+			val = "none"
+		}
+		intake.Constraints = models.FieldValue{Value: val, Confidence: models.Confirmed, UpdatedAt: models.Now()}
+		changed = true
+	}
+	if intake.Revision || pending == fRevise {
+		if mentionDatesRe.MatchString(text) && len(h.Dates) == 0 {
+			intake.ExactDates = nil
+			intake.DateWindow = nil
+			intake.Nights = models.NightsRange{}
+			changed = true
+		}
+		if mentionBudgetRe.MatchString(text) && h.Budget == "" {
+			if intake.BudgetPP != nil {
+				intake.BudgetPP.Min, intake.BudgetPP.Max = 0, 0
+				intake.BudgetPP.Includes = nil
+			}
+			changed = true
+		}
+		if mentionDestRe.MatchString(text) && h.Destination == "" && !strings.Contains(strings.ToLower(text), "where are you flying") {
+			intake.Destination = models.FieldValue{}
+			intake.Vibe = models.FieldValue{}
+			changed = true
+		}
+		if changed {
+			intake.Revision = false
+			intake.Confirmed = false
+		}
+	}
 	if !changed {
 		return trip
 	}
@@ -608,6 +841,58 @@ func (b *Brain) applyChatShortcuts(ctx context.Context, trip *models.Trip, m mod
 		return trip
 	}
 	return updated
+}
+
+func setParticipantOrigin(trip *models.Trip, waID, label string) bool {
+	if trip == nil || waID == "" || strings.TrimSpace(label) == "" {
+		return false
+	}
+	idx := findOrCreateParticipantIndexPtr(trip, waID)
+	if idx < 0 {
+		return false
+	}
+	p := &trip.Participants[idx]
+	if p.Intake == nil {
+		p.Intake = &models.ParticipantIntake{}
+	}
+	if p.Intake.Origin.Known() && p.Intake.Origin.Confidence == models.Confirmed {
+		return false
+	}
+	p.Intake.Origin = models.FieldValue{Value: label, Confidence: models.Confirmed, UpdatedAt: models.Now()}
+	if code := airportFromLabel(label); code != "" {
+		p.OriginAirport = code
+	}
+	p.OriginCity = label
+	p.Origin = label
+	return true
+}
+
+func budgetIncludesFromText(text string) []string {
+	flights := includesFlightRe.MatchString(text)
+	stay := includesStayRe.MatchString(text)
+	food := includesFoodRe.MatchString(text)
+	switch {
+	case food && (flights || stay || strings.Contains(strings.ToLower(text), "everything") || strings.Contains(strings.ToLower(text), "all of it")):
+		return []string{"flights", "stay", "food", "activities"}
+	case flights && stay:
+		return []string{"flights", "stay"}
+	case flights && !stay && !food:
+		return []string{"flights"}
+	case stay && !flights && !food:
+		return []string{"stay"}
+	default:
+		return nil
+	}
+}
+
+func childrenFromText(text string) (string, bool) {
+	if noneAnswerRe.MatchString(text) || regexp.MustCompile(`(?i)\bno kids\b|\bno children\b|\ball adults\b`).MatchString(text) {
+		return "0", true
+	}
+	if m := kidsCountRe.FindStringSubmatch(text); len(m) == 2 {
+		return m[1], true
+	}
+	return "", false
 }
 
 func hasOpenIntakePoll(trip *models.Trip, field string) bool {
@@ -835,67 +1120,156 @@ func (b *Brain) askField(ctx context.Context, trip *models.Trip, field string) e
 	}
 	switch field {
 	case fAttendance:
+		if pollWasAsked(trip, field) {
+			return b.writeAndSend(ctx, trip, "ASK", "ask who is actually coming. One question. Accept names.", fAttendance)
+		}
 		return b.askAttendancePoll(ctx, trip)
+	case fChildren:
+		return b.writeAndSend(ctx, trip, "ASK", "ask whether any children are coming, or if it is all adults. One question.", fChildren)
 	case fOrigin:
+		if pollWasAsked(trip, field) {
+			return b.writeAndSend(ctx, trip, "ASK", "ask only the people still missing a departure city, by name. One question.", fOrigin)
+		}
 		return b.askOriginPoll(ctx, trip)
 	case fDateWindow:
-		return b.writeAndSend(ctx, trip, "ASK", "ask for a rough date window and how many nights they want — chat, not a poll", nil)
+		return b.writeAndSend(ctx, trip, "ASK", "ask for a rough availability window and how many nights they want. Chat, not a poll. One question.", fDateWindow)
 	case fExactDates:
+		if pollWasAsked(trip, field) {
+			return b.writeAndSend(ctx, trip, "ASK", "the date picks do not overlap for everyone who is coming. Ask for one range that works for all of them. Do not use a majority.", fExactDates)
+		}
 		return b.askExactDatesPoll(ctx, trip)
 	case fBudgetRange:
+		if pollWasAsked(trip, field) {
+			return b.writeAndSend(ctx, trip, "ASK", "ask for a per-person budget in CAD. One question.", fBudgetRange)
+		}
 		return b.askBudgetPoll(ctx, trip)
 	case fBudgetIncludes:
-		return b.writeAndSend(ctx, trip, "ASK", "ask whether their stated budget covers flights+stay only, or food and activities too", nil)
+		return b.writeAndSend(ctx, trip, "ASK", "ask whether that per-person budget covers flights and accommodation only, or also food and activities. One question.", fBudgetIncludes)
 	case fVibe:
+		if pollWasAsked(trip, field) {
+			return b.writeAndSend(ctx, trip, "ASK", "ask what kind of trip they want: beach, city, nature, or open to suggestions. One question.", fVibe)
+		}
 		return b.askVibePoll(ctx, trip)
 	case fDestination:
+		if pollWasAsked(trip, field) {
+			return b.writeAndSend(ctx, trip, "ASK", "ask which destination they want. One question.", fDestination)
+		}
 		return b.askDestinationPoll(ctx, trip)
 	case fConstraints:
-		return b.writeAndSend(ctx, trip, "ASK", "ask once about must-haves: room sharing, accessibility, dietary needs, flight limits, places to avoid. Accept \"none\".", nil)
+		return b.writeAndSend(ctx, trip, "ASK", "ask once about must-haves: room sharing, accessibility, dietary needs, flight limits, and places to avoid. Accept none.", fConstraints)
+	case fPackage:
+		if trip.Intake != nil && trip.Intake.Revision {
+			return b.writeAndSend(ctx, trip, "ASK", "they want to change the trip package. Ask which part to change: who's coming, departure city, dates, budget, or destination. One question.", fRevise)
+		}
+		return b.askPackagePoll(ctx, trip)
 	}
 	return nil
 }
 
+func pollWasAsked(trip *models.Trip, field string) bool {
+	if trip == nil {
+		return false
+	}
+	for _, p := range trip.IntakePolls {
+		if p.Field == field {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Brain) askAttendancePoll(ctx context.Context, trip *models.Trip) error {
-	return b.postIntakePoll(ctx, trip, fAttendance, "Who's in?", []string{"Coming", "Maybe", "Not coming"}, false,
-		"post the attendance poll, one line introducing it")
+	return b.postIntakePoll(ctx, trip, fAttendance, "Who's coming?", []string{"Coming", "Maybe", "Not coming"}, nil, false,
+		"post the attendance poll. One short line introducing it, in the group's voice.")
 }
 
 func (b *Brain) askOriginPoll(ctx context.Context, trip *models.Trip) error {
 	cities := candidateOriginCities(trip)
-	options := append(append([]string{}, cities...), "Other (reply in chat)")
-	return b.postIntakePoll(ctx, trip, fOrigin, "Where are you flying from?", options, false,
-		"post a poll of likely departure cities plus an Other option")
+	options := append(append([]string{}, cities...), "Other — I'll reply in chat")
+	return b.postIntakePoll(ctx, trip, fOrigin, "Where are you flying from?", options, nil, false,
+		"post a poll of likely departure cities plus an Other option. One short line. Each person answers for themselves.")
 }
 
 func (b *Brain) askExactDatesPoll(ctx context.Context, trip *models.Trip) error {
-	ranges := generateDateOptions(trip.Intake.DateWindow, trip.Intake.Nights)
-	if len(ranges) == 0 {
-		return b.writeAndSend(ctx, trip, "ASK", "the date window given doesn't fit the requested trip length — ask for a wider window", nil)
+	window := (*models.DateWindow)(nil)
+	nights := models.NightsRange{}
+	if trip.Intake != nil {
+		window = trip.Intake.DateWindow
+		nights = trip.Intake.Nights
+		if window == nil && trip.Intake.ExactDates != nil {
+			window = &models.DateWindow{Earliest: trip.Intake.ExactDates.Depart, Latest: trip.Intake.ExactDates.Return}
+		}
 	}
-	return b.postIntakePoll(ctx, trip, fExactDates, "Which dates work?", ranges, true,
-		"post a multi-select poll of concrete date ranges that fit inside the stated window and length")
+	labels, values := generateDateOptions(window, nights)
+	if len(labels) == 0 {
+		return b.writeAndSend(ctx, trip, "ASK", "the date window does not fit the trip length. Ask for a wider window. One question.", fDateWindow)
+	}
+	if len(labels) == 1 {
+		if start, end, ok := parseDateRangeText(values[0]); ok && trip.Intake != nil {
+			trip.Intake.ExactDates = &models.ExactDates{Depart: start, Return: end}
+			if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake": trip.Intake}); err == nil {
+				return b.continueIntake(ctx, trip, nil)
+			}
+		}
+	}
+	return b.postIntakePoll(ctx, trip, fExactDates, "Which dates work for everyone?", labels, values, true,
+		"post a multi-select poll of concrete date ranges inside their window. One short line. Say that a date only counts if everyone can do it.")
 }
 
 func (b *Brain) askBudgetPoll(ctx context.Context, trip *models.Trip) error {
 	return b.postIntakePoll(ctx, trip, fBudgetRange, "Budget per person?",
-		[]string{"Under C$600", "C$600-900", "C$900-1300", "C$1300+"}, false,
-		"post a poll of CAD per-person budget ranges")
+		[]string{"Under C$600", "C$600–900", "C$900–1300", "C$1300+"}, nil, false,
+		"post a poll of CAD per-person budget ranges. One short line. This is each person's own cap, not a group average.")
 }
 
 func (b *Brain) askVibePoll(ctx context.Context, trip *models.Trip) error {
-	return b.postIntakePoll(ctx, trip, fVibe, "What's the vibe?",
-		[]string{"Beach", "City", "Nature", "Open to suggestions"}, false,
-		"post a poll asking what kind of trip they want")
+	return b.postIntakePoll(ctx, trip, fVibe, "What kind of trip?",
+		[]string{"Beach", "City", "Nature", "Open to suggestions"}, nil, false,
+		"post a poll asking what kind of trip they want. One short line.")
+}
+
+func (b *Brain) askPackagePoll(ctx context.Context, trip *models.Trip) error {
+	label := packageLabel(trip)
+	if label == "" {
+		return b.writeAndSend(ctx, trip, "ASK", "summarize the destination, exact dates, and budget per person, and ask if you should search. One message.", fPackage)
+	}
+	return b.postIntakePoll(ctx, trip, fPackage, "Lock this trip?",
+		[]string{label, "Change something"}, []string{"go", "change"}, false,
+		"post a poll with the full trip package (destination, exact dates, budget per person) and a change option. One short line. Do not say you have searched.")
+}
+
+func packageLabel(trip *models.Trip) string {
+	if trip == nil || trip.Intake == nil || !trip.Intake.Destination.Known() || trip.Intake.ExactDates == nil {
+		return ""
+	}
+	dest := trip.Intake.Destination.AsString()
+	when := formatShortDate(trip.Intake.ExactDates.Depart) + "–" + formatShortDate(trip.Intake.ExactDates.Return)
+	cost := "budget TBD"
+	if trip.Intake.BudgetPP != nil && trip.Intake.BudgetPP.Max > 0 {
+		cost = fmt.Sprintf("up to C$%.0f each", trip.Intake.BudgetPP.Max)
+	}
+	label := dest + " · " + when + " · " + cost
+	if len(label) > 90 {
+		label = strings.TrimSpace(label[:87]) + "…"
+	}
+	return label
+}
+
+func formatShortDate(iso string) string {
+	t, err := time.Parse("2006-01-02", iso)
+	if err != nil {
+		return iso
+	}
+	return t.Format("Jan 2")
 }
 
 func (b *Brain) askDestinationPoll(ctx context.Context, trip *models.Trip) error {
 	options, err := b.proposeDestinations(ctx, trip)
 	if err != nil || len(options) == 0 {
-		return b.writeAndSend(ctx, trip, "ASK", "ask the group if anyone has a destination in mind", nil)
+		return b.writeAndSend(ctx, trip, "ASK", "ask if anyone has a destination in mind. One question.", fDestination)
 	}
-	return b.postIntakePoll(ctx, trip, fDestination, "Which city?", options, false,
-		"post a single-select poll of 2-3 proposed destinations that fit the budget, origins, and dates")
+	return b.postIntakePoll(ctx, trip, fDestination, "Which city?", options, nil, false,
+		"post a single-select poll of 2-3 destinations that fit the budget, origins, and dates. One short line.")
 }
 
 // proposeDestinations asks Gemini for 2-3 destination names fitting what's known so far — a much
@@ -904,7 +1278,10 @@ func (b *Brain) askDestinationPoll(ctx context.Context, trip *models.Trip) error
 func (b *Brain) proposeDestinations(ctx context.Context, trip *models.Trip) ([]string, error) {
 	cctx, cancel := context.WithTimeout(ctx, llmCallTimeout)
 	defer cancel()
-	vibe := trip.Intake.Vibe.AsString()
+	vibe := ""
+	if trip.Intake != nil {
+		vibe = trip.Intake.Vibe.AsString()
+	}
 	system := fmt.Sprintf(`You suggest 2-3 destination cities for a group trip. Vibe: %s. Return ONLY JSON matching the schema — just city names, nothing else.`, vibe)
 	schema := llm.Schema{Name: "destination_suggestions", Schema: map[string]any{
 		"type": "object",
@@ -944,64 +1321,77 @@ func candidateOriginCities(trip *models.Trip) []string {
 	return out
 }
 
-func generateDateOptions(window *models.DateWindow, nights models.NightsRange) []string {
-	if window == nil || window.Earliest == "" {
-		return nil
+func generateDateOptions(window *models.DateWindow, nights models.NightsRange) (labels, values []string) {
+	if window == nil || !isoDateOK(window.Earliest) {
+		return nil, nil
 	}
 	start, err := time.Parse("2006-01-02", window.Earliest)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 	end := start
-	if window.Latest != "" {
+	if isoDateOK(window.Latest) {
 		if e, err := time.Parse("2006-01-02", window.Latest); err == nil {
 			end = e
 		}
 	}
 	n := nights.Min
 	if n <= 0 {
+		n = nights.Max
+	}
+	if n <= 0 {
 		n = 3
 	}
-	var out []string
-	for d := start; !d.After(end) && len(out) < 5; d = d.AddDate(0, 0, 2) {
-		depart := d
+	for d := start; !d.After(end) && len(labels) < 5; d = d.AddDate(0, 0, 2) {
 		ret := d.AddDate(0, 0, n)
-		out = append(out, fmt.Sprintf("%s – %s (%d nights)",
-			depart.Format("Mon Jan 2"), ret.Format("Mon Jan 2"), n))
+		if ret.After(end) && !ret.Equal(end) {
+			continue
+		}
+		labels = append(labels, fmt.Sprintf("%s – %s", d.Format("Mon Jan 2"), ret.Format("Mon Jan 2")))
+		values = append(values, d.Format("2006-01-02")+".."+ret.Format("2006-01-02"))
 	}
-	return out
+	return labels, values
 }
 
-// postIntakePoll calls the writer for a one-line intro (per spec §6.2: "the text introduces it in
-// one line; the poll carries the options"), sends the poll, and tracks it on the trip so votes can
-// be matched back and completeness checked.
-func (b *Brain) postIntakePoll(ctx context.Context, trip *models.Trip, field, question string, options []string, multi bool, slot string) error {
-	text, _, _, _, err := b.writeIntake(ctx, trip, "ASK_POLL", slot, trip)
-	if err != nil || strings.TrimSpace(text) == "" {
-		text = question
+// postIntakePoll calls the writer for a one-line intro, sends the poll, and tracks it so votes
+// bind to this question instead of an older poll.
+func (b *Brain) postIntakePoll(ctx context.Context, trip *models.Trip, field, question string, options, values []string, multi bool, slot string) error {
+	options, values = clipPollPair(options, values)
+	if len(options) < 2 {
+		return b.writeAndSend(ctx, trip, "ASK", slot, field)
 	}
-	if err := b.Messenger.SendPoll(ctx, trip.GroupID, messaging.Poll{Name: question, Options: options, AllowMultipleAnswers: multi}); err != nil {
+	text, _, _, _, err := b.writeIntake(ctx, trip, "ASK_POLL", slot, trip)
+	intro := strings.TrimSpace(text)
+	if err != nil || intro == "" || strings.EqualFold(intro, question) || strings.Contains(intro, slot) {
+		intro = ""
+	}
+	messageID, err := b.Messenger.SendPoll(ctx, trip.GroupID, messaging.Poll{Name: question, Options: options, AllowMultipleAnswers: multi})
+	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(text) != "" {
-		if err := b.Messenger.Send(ctx, trip.GroupID, text, nil); err != nil {
+	if intro != "" && intro != trip.LastAgentText {
+		if err := b.Messenger.Send(ctx, trip.GroupID, intro, nil); err != nil {
 			slog.Warn("failed to send poll intro", "group_id", trip.GroupID, "err", err)
 		}
 	}
 
 	expected := make([]string, 0, len(trip.Participants))
-	for _, p := range comingParticipants(trip) {
+	people := comingParticipants(trip)
+	if field == fAttendance {
+		people = trip.Participants
+	}
+	for _, p := range people {
 		if p.WaID != "" {
 			expected = append(expected, p.WaID)
 		}
 	}
 	poll := models.IntakePoll{
-		Field: field, Options: options, Multi: multi, ExpectedVoters: expected,
-		Votes: map[string][]string{}, CreatedAt: models.Now(),
+		PollMessageID: messageID, Field: field, Question: question, Options: options, OptionValues: values,
+		Multi: multi, ExpectedVoters: expected, Votes: map[string][]string{}, CreatedAt: models.Now(),
 	}
-	trip = b.setPendingQuestion(ctx, trip, field, "", "group")
+	trip = b.setPendingQuestion(ctx, trip, field, messageID, "group")
 	trip.IntakePolls = append(trip.IntakePolls, poll)
-	_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake_polls": trip.IntakePolls, "last_agent_text": text})
+	_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"intake_polls": trip.IntakePolls, "last_agent_text": intro})
 	return nil
 }
 
@@ -1028,66 +1418,163 @@ func (b *Brain) recordPollVote(ctx context.Context, trip *models.Trip, poll *mod
 	return updated
 }
 
-func pollComplete(trip *models.Trip, poll *models.IntakePoll) bool {
-	if len(poll.ExpectedVoters) == 0 {
-		return len(poll.Votes) > 0
+func pollVoteSelection(votes map[string][]string, id string) []string {
+	if sel, ok := votes[id]; ok && len(sel) > 0 && strings.TrimSpace(sel[0]) != "" {
+		return sel
 	}
-	for _, id := range poll.ExpectedVoters {
-		if _, voted := poll.Votes[id]; !voted {
-			return false
+	user := strings.Split(id, "@")[0]
+	for voter, sel := range votes {
+		if len(sel) == 0 || strings.TrimSpace(sel[0]) == "" {
+			continue
+		}
+		if voter == id || (user != "" && strings.Split(voter, "@")[0] == user) {
+			return sel
 		}
 	}
-	return true
+	return nil
+}
+
+func pollHasSelection(votes map[string][]string) bool {
+	for _, sel := range votes {
+		if len(sel) > 0 && strings.TrimSpace(sel[0]) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func pollComplete(trip *models.Trip, poll *models.IntakePoll) bool {
+	if poll == nil || !pollHasSelection(poll.Votes) {
+		return false
+	}
+	if len(poll.ExpectedVoters) == 0 || len(comingParticipants(trip)) <= 1 {
+		return true
+	}
+	matched, unmatched := 0, 0
+	for _, id := range poll.ExpectedVoters {
+		if len(pollVoteSelection(poll.Votes, id)) > 0 {
+			matched++
+		} else {
+			unmatched++
+		}
+	}
+	if unmatched == 0 {
+		return true
+	}
+	// Roster ids and the vote id differ (@lid vs @c.us). Don't wait forever.
+	return matched == 0
 }
 
 // closePollAndApply applies every recorded vote to the relevant intake field (poll votes are
 // already structured, so this bypasses LLM extraction entirely) and marks the poll closed.
 func (b *Brain) closePollAndApply(ctx context.Context, trip *models.Trip, poll *models.IntakePoll) *models.Trip {
+	if trip.Intake == nil {
+		trip.Intake = &models.TripIntake{}
+	}
 	switch poll.Field {
 	case fAttendance:
+		coming := 0
 		for voterID, selected := range poll.Votes {
-			if len(selected) == 0 {
+			if len(selected) == 0 || strings.TrimSpace(selected[0]) == "" {
 				continue
 			}
 			idx := findOrCreateParticipantIndexPtr(trip, voterID)
 			if idx >= 0 {
-				trip.Participants[idx].Intake.Attendance = strings.ToLower(strings.ReplaceAll(selected[0], " ", "_"))
+				if trip.Participants[idx].Intake == nil {
+					trip.Participants[idx].Intake = &models.ParticipantIntake{}
+				}
+				trip.Participants[idx].Intake.Attendance = normalizeAttendance(selected[0])
+				if trip.Participants[idx].Intake.Attendance == "coming" || trip.Participants[idx].Intake.Attendance == "maybe" {
+					coming++
+				}
 			}
+		}
+		if coming > 0 && trip.Intake != nil && !trip.Intake.Headcount.Known() {
+			trip.Intake.Headcount = models.FieldValue{Value: float64(coming), Confidence: models.Confirmed, UpdatedAt: models.Now()}
 		}
 	case fOrigin:
 		for voterID, selected := range poll.Votes {
 			if len(selected) == 0 || strings.HasPrefix(selected[0], "Other") {
 				continue
 			}
-			idx := findOrCreateParticipantIndexPtr(trip, voterID)
-			if idx >= 0 {
-				trip.Participants[idx].Intake.Origin = models.FieldValue{Value: selected[0], Confidence: models.Confirmed, SourceID: poll.PollMessageID, UpdatedAt: models.Now()}
-				trip.Participants[idx].OriginCity = selected[0]
-			}
+			setParticipantOrigin(trip, voterID, selected[0])
 		}
 	case fExactDates:
-		if common := commonlyVoted(poll); common != "" {
-			if depart, ret, ok := parseExactDateOption(common); ok {
-				trip.Intake.ExactDates = &models.ExactDates{Depart: depart, Return: ret}
+		for voterID, selected := range poll.Votes {
+			idx := findOrCreateParticipantIndexPtr(trip, voterID)
+			if idx < 0 {
+				continue
+			}
+			if trip.Participants[idx].Intake == nil {
+				trip.Participants[idx].Intake = &models.ParticipantIntake{}
+			}
+			for _, label := range selected {
+				if start, end, ok := parseDateRangeText(optionValueFor(poll, label)); ok {
+					trip.Participants[idx].Intake.Available = append(trip.Participants[idx].Intake.Available, models.DateRange{Start: start, End: end, SourceID: poll.PollMessageID})
+				}
 			}
 		}
+		if depart, ret, ok := sharedDateChoice(poll); ok && trip.Intake != nil {
+			trip.Intake.ExactDates = &models.ExactDates{Depart: depart, Return: ret}
+		}
 	case fBudgetRange:
-		if common := commonlyVoted(poll); common != "" {
-			lo, hi := parseBudgetRangeLabel(common)
+		lo, hi := tightestBudget(poll)
+		if hi > 0 && trip.Intake != nil {
 			bp := trip.Intake.BudgetPP
 			if bp == nil {
 				bp = &models.BudgetPP{Currency: "CAD"}
 			}
 			bp.Min, bp.Max = lo, hi
+			if bp.Currency == "" {
+				bp.Currency = "CAD"
+			}
 			trip.Intake.BudgetPP = bp
 		}
+		for voterID, selected := range poll.Votes {
+			if len(selected) == 0 {
+				continue
+			}
+			_, b := parseBudgetRangeLabel(selected[0])
+			if b <= 0 {
+				continue
+			}
+			idx := findOrCreateParticipantIndexPtr(trip, voterID)
+			if idx >= 0 {
+				if trip.Participants[idx].Intake == nil {
+					trip.Participants[idx].Intake = &models.ParticipantIntake{}
+				}
+				trip.Participants[idx].Intake.BudgetPP = models.FieldValue{Value: b, Confidence: models.Confirmed, SourceID: poll.PollMessageID, UpdatedAt: models.Now()}
+			}
+		}
 	case fVibe:
-		if common := commonlyVoted(poll); common != "" {
-			trip.Intake.Vibe = models.FieldValue{Value: strings.ToLower(common), Confidence: models.Confirmed, SourceID: poll.PollMessageID, UpdatedAt: models.Now()}
+		if common := commonlyVoted(poll); common != "" && trip.Intake != nil {
+			trip.Intake.Vibe = models.FieldValue{Value: normalizeVibe(common), Confidence: models.Confirmed, SourceID: poll.PollMessageID, UpdatedAt: models.Now()}
 		}
 	case fDestination:
-		if common := commonlyVoted(poll); common != "" {
+		if common := commonlyVoted(poll); common != "" && trip.Intake != nil {
 			trip.Intake.Destination = models.FieldValue{Value: common, Confidence: models.Confirmed, SourceID: poll.PollMessageID, UpdatedAt: models.Now()}
+		}
+	case fPackage:
+		goVotes, changeVotes := 0, 0
+		for _, selected := range poll.Votes {
+			if len(selected) == 0 {
+				continue
+			}
+			value := optionValueFor(poll, selected[0])
+			if value == "change" || strings.Contains(strings.ToLower(selected[0]), "change") {
+				changeVotes++
+			} else {
+				goVotes++
+			}
+		}
+		if trip.Intake != nil {
+			if changeVotes > 0 {
+				trip.Intake.Revision = true
+				trip.Intake.Confirmed = false
+			} else if goVotes > 0 {
+				trip.Intake.Confirmed = true
+				trip.Intake.Revision = false
+			}
 		}
 	}
 
@@ -1132,29 +1619,130 @@ func commonlyVoted(poll *models.IntakePoll) string {
 	return order[0]
 }
 
-func parseExactDateOption(label string) (depart, ret string, ok bool) {
-	// label format: "Mon Jan 2 – Mon Jan 9 (7 nights)" — we don't have the year in the label, so
-	// closeIntakePoll's caller (closePollAndApply) relies on generateDateOptions having been built
-	// from a window that's already resolved to the correct year.
-	parts := strings.SplitN(label, "–", 2)
-	if len(parts) != 2 {
-		return "", "", false
-	}
-	return strings.TrimSpace(parts[0]), strings.TrimSpace(strings.SplitN(parts[1], "(", 2)[0]), true
-}
-
 func parseBudgetRangeLabel(label string) (lo, hi float64) {
+	s := strings.ToLower(label)
+	s = strings.ReplaceAll(s, "–", "-")
+	s = strings.ReplaceAll(s, ",", "")
 	switch {
-	case strings.Contains(label, "Under"):
+	case strings.Contains(s, "under"):
 		return 0, 600
-	case strings.Contains(label, "600-900"):
+	case strings.Contains(s, "600-900"):
 		return 600, 900
-	case strings.Contains(label, "900-1300"):
+	case strings.Contains(s, "900-1300"):
 		return 900, 1300
-	case strings.Contains(label, "1300"):
-		return 1300, 2000
+	case strings.Contains(s, "1300"):
+		return 1300, 2500
 	}
 	return 0, 0
+}
+
+func optionValueFor(poll *models.IntakePoll, label string) string {
+	if poll == nil {
+		return label
+	}
+	for i, opt := range poll.Options {
+		if opt != label {
+			continue
+		}
+		if i < len(poll.OptionValues) && strings.TrimSpace(poll.OptionValues[i]) != "" {
+			return poll.OptionValues[i]
+		}
+		return label
+	}
+	return label
+}
+
+func sharedDateChoice(poll *models.IntakePoll) (string, string, bool) {
+	var sets []map[string]bool
+	for _, selected := range poll.Votes {
+		set := map[string]bool{}
+		for _, label := range selected {
+			v := optionValueFor(poll, label)
+			if strings.Contains(v, "..") {
+				set[v] = true
+			}
+		}
+		if len(set) > 0 {
+			sets = append(sets, set)
+		}
+	}
+	if len(sets) == 0 {
+		return "", "", false
+	}
+	inter := map[string]bool{}
+	for k := range sets[0] {
+		inter[k] = true
+	}
+	for _, set := range sets[1:] {
+		next := map[string]bool{}
+		for k := range inter {
+			if set[k] {
+				next[k] = true
+			}
+		}
+		inter = next
+	}
+	if len(inter) == 0 {
+		return "", "", false
+	}
+	for i, label := range poll.Options {
+		v := label
+		if i < len(poll.OptionValues) && poll.OptionValues[i] != "" {
+			v = poll.OptionValues[i]
+		}
+		if !inter[v] {
+			continue
+		}
+		if start, end, ok := parseDateRangeText(v); ok && isoDateOK(start) && isoDateOK(end) {
+			return start, end, true
+		}
+	}
+	return "", "", false
+}
+
+func tightestBudget(poll *models.IntakePoll) (float64, float64) {
+	var lo, hi float64
+	set := false
+	for _, selected := range poll.Votes {
+		if len(selected) == 0 {
+			continue
+		}
+		a, b := parseBudgetRangeLabel(selected[0])
+		if b <= 0 {
+			continue
+		}
+		if !set || b < hi {
+			lo, hi = a, b
+			set = true
+		}
+	}
+	return lo, hi
+}
+
+func normalizeAttendance(label string) string {
+	s := strings.ToLower(strings.TrimSpace(label))
+	switch {
+	case strings.Contains(s, "not"):
+		return "not_coming"
+	case strings.Contains(s, "maybe"):
+		return "maybe"
+	default:
+		return "coming"
+	}
+}
+
+func normalizeVibe(label string) string {
+	s := strings.ToLower(label)
+	switch {
+	case strings.Contains(s, "beach"):
+		return "beach"
+	case strings.Contains(s, "city"):
+		return "city"
+	case strings.Contains(s, "nature"), strings.Contains(s, "quiet"):
+		return "nature"
+	default:
+		return "open"
+	}
 }
 
 // ------------------------------------------------------------------ writer (§6)
@@ -1162,7 +1750,7 @@ func parseBudgetRangeLabel(label string) (lo, hi float64) {
 func (b *Brain) writeIntake(ctx context.Context, trip *models.Trip, intent, slot string, _ *models.Trip) (text, pollQuestion string, pollOptions []string, pollMulti bool, err error) {
 	cctx, cancel := context.WithTimeout(ctx, llmCallTimeout)
 	defer cancel()
-	recent := "(none)"
+	recent := b.recentChat(ctx, trip)
 	system := prompts.IntakeWriterSystem(b.Config.BotName, intent, slot, tripStateJSON(trip), recent, trip.LastAgentText)
 	out, err := b.LLM.Structured(cctx, system, []llm.Message{{Role: "user", Content: slot}}, toSchema(prompts.IntakeWriter))
 	if err != nil {
@@ -1180,40 +1768,104 @@ func (b *Brain) writeIntake(ctx context.Context, trip *models.Trip, intent, slot
 	return w.Text, w.PollQuestion, w.PollOptions, w.PollMulti, nil
 }
 
-// writeAndSend calls the writer for a plain-text (non-poll) intent and sends it, with the §7.4
-// watchdog: if the writer hasn't produced a message within 20s, send the one permitted literal
-// fallback instead.
-func (b *Brain) writeAndSend(ctx context.Context, trip *models.Trip, intent, slot string, _ any) error {
-	type result struct {
-		text string
-		err  error
+func (b *Brain) recentChat(ctx context.Context, trip *models.Trip) string {
+	if trip == nil {
+		return "(none)"
 	}
-	done := make(chan result, 1)
-	go func() {
-		text, _, _, _, err := b.writeIntake(ctx, trip, intent, slot, trip)
-		done <- result{text, err}
-	}()
+	msgs, err := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 8, false)
+	if err != nil || len(msgs) == 0 {
+		return "(none)"
+	}
+	var sb strings.Builder
+	for _, msg := range msgs {
+		line := strings.TrimSpace(msg.Text)
+		if line == "" {
+			continue
+		}
+		if len(line) > 160 {
+			line = line[:160]
+		}
+		sb.WriteString(msg.SenderName)
+		sb.WriteString(": ")
+		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+	if sb.Len() == 0 {
+		return "(none)"
+	}
+	return sb.String()
+}
 
-	select {
-	case r := <-done:
-		if r.err != nil || strings.TrimSpace(r.text) == "" {
-			slog.Warn("intake writer failed", "group_id", trip.GroupID, "intent", intent, "err", r.err)
-			return b.Messenger.Send(ctx, trip.GroupID, "Got that — still lining up the next question.", nil)
-		}
-		if err := b.Messenger.Send(ctx, trip.GroupID, r.text, nil); err != nil {
-			return err
-		}
-		_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"last_agent_text": r.text})
+// writeAndSend turns the controller's intent into one chat message. If the writer fails, it asks
+// the actual question once. It does not send a holding line, and it does not repeat the same text.
+func (b *Brain) writeAndSend(ctx context.Context, trip *models.Trip, intent, slot, field string) error {
+	text, _, _, _, err := b.writeIntake(ctx, trip, intent, slot, trip)
+	if err != nil || strings.TrimSpace(text) == "" {
+		slog.Warn("intake writer failed", "group_id", trip.GroupID, "intent", intent, "err", err)
+		text = naturalAsk(field, slot)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" || text == strings.TrimSpace(trip.LastAgentText) {
 		return nil
-	case <-time.After(20 * time.Second): // spec §7.4 watchdog
-		slog.Warn("intake turn watchdog fired", "group_id", trip.GroupID, "intent", intent)
-		return b.Messenger.Send(ctx, trip.GroupID, "Give me a sec, still working on it", nil)
+	}
+	if err := b.Messenger.Send(ctx, trip.GroupID, text, nil); err != nil {
+		return err
+	}
+	if field != "" {
+		trip = b.setPendingQuestion(ctx, trip, field, "", "group")
+	}
+	_, _ = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"last_agent_text": text})
+	trip.LastAgentText = text
+	return nil
+}
+
+func naturalAsk(field, slot string) string {
+	if !instructionSlot(slot) {
+		return strings.TrimSpace(slot)
+	}
+	switch field {
+	case fAttendance:
+		return "Who's coming on this one?"
+	case fChildren:
+		return "Any kids coming, or is it all adults?"
+	case fOrigin:
+		return "Where's each person flying from?"
+	case fDateWindow:
+		return "What dates are you free, and how many nights do you want?"
+	case fExactDates:
+		return "Which exact dates work for everyone who's coming?"
+	case fBudgetRange:
+		return "What should I cap the trip at, per person, in CAD?"
+	case fBudgetIncludes:
+		return "Does that budget cover flights and the stay only, or food and activities too?"
+	case fVibe:
+		return "Beach, city, nature, or open to suggestions?"
+	case fDestination:
+		return "Any city in mind, or should I suggest a few?"
+	case fConstraints:
+		return "Anything I should plan around — room sharing, accessibility, food limits, flight limits, or places to skip? None is fine."
+	case fPackage, fRevise:
+		return "Want me to change who's coming, the cities, the dates, or the budget?"
+	default:
+		return "Okay, I'll drop this trip."
 	}
 }
 
+func instructionSlot(slot string) bool {
+	s := strings.ToLower(strings.TrimSpace(slot))
+	if s == "" {
+		return true
+	}
+	for _, prefix := range []string{"ask ", "post ", "the ", "some ", "they ", "summarize "} {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *Brain) confirmReady(ctx context.Context, trip *models.Trip) error {
-	slot := readinessSummarySlot(trip)
-	return b.writeAndSend(ctx, trip, "CONFIRM_READY", slot, nil)
+	return b.askPackagePoll(ctx, trip)
 }
 
 func readinessSummarySlot(trip *models.Trip) string {
@@ -1293,20 +1945,43 @@ func (b *Brain) seedIntake(ctx context.Context, trip *models.Trip, m models.Inco
 
 // ------------------------------------------------------------------ handoff (§9)
 
-// handoffToSearch builds a single Option from the completed intake data and routes through the
-// existing, unmodified AwaitingChoice-onward pipeline (lockChosenOption + offerPlanFinalize —
-// which itself sends a day-by-day plan and a "Finalize this plan?" poll before any real search).
+// handoffToSearch copies the finished intake onto the trip and starts the flight and stay search.
+// It runs only after the package poll (or an explicit yes to that poll).
 func (b *Brain) handoffToSearch(ctx context.Context, trip *models.Trip) error {
+	if trip.Intake == nil {
+		trip.Intake = &models.TripIntake{}
+	}
 	for i := range trip.Participants {
 		p := &trip.Participants[i]
-		if p.Intake == nil {
+		if p.Intake == nil || !p.Intake.Origin.Known() {
 			continue
 		}
+		label := p.Intake.Origin.AsString()
+		if label == "" {
+			continue
+		}
+		if p.OriginCity == "" {
+			p.OriginCity = label
+		}
+		if p.Origin == "" {
+			p.Origin = label
+		}
 		if p.OriginAirport == "" {
-			p.OriginAirport = p.Intake.Origin.AsString()
+			if code := airportFromLabel(label); code != "" {
+				p.OriginAirport = code
+			} else {
+				p.OriginAirport = label
+			}
 		}
 	}
-	if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"participants": trip.Participants}); err != nil {
+	fields := map[string]any{"participants": trip.Participants}
+	if origin := originAirportCode("", trip.Participants); origin != "" {
+		fields["origin"] = origin
+	}
+	if trip.Intake.BudgetPP != nil && trip.BudgetNote == "" {
+		fields["budget_note"] = fmt.Sprintf("C$%.0f-%.0f per person", trip.Intake.BudgetPP.Min, trip.Intake.BudgetPP.Max)
+	}
+	if _, err := b.Store.UpdateTrip(ctx, trip.ID, fields); err != nil {
 		return err
 	}
 
@@ -1340,5 +2015,6 @@ func (b *Brain) handoffToSearch(ctx context.Context, trip *models.Trip) error {
 	if err != nil {
 		return err
 	}
-	return b.offerPlanFinalize(ctx, trip)
+	trip = b.syncTripBasics(ctx, trip, "")
+	return b.startTravelSearch(ctx, trip)
 }

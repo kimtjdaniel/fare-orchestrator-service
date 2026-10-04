@@ -245,7 +245,7 @@ func (g *GeminiLLM) Agent(ctx context.Context, system string, messages []Message
 		body := map[string]any{
 			"system_instruction": geminiContent{Parts: []geminiPart{{Text: system}}},
 			"contents":           contents,
-			"generationConfig":   map[string]any{"maxOutputTokens": 800},
+			"generationConfig":   map[string]any{"maxOutputTokens": 4096},
 		}
 		if len(geminiTools) > 0 {
 			body["tools"] = geminiTools
@@ -384,7 +384,7 @@ func applyFastGen(body map[string]any) {
 		cfg = map[string]any{}
 	}
 	if _, ok := cfg["maxOutputTokens"]; !ok {
-		cfg["maxOutputTokens"] = 1536
+		cfg["maxOutputTokens"] = 4096
 	}
 	cfg["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
 	body["generationConfig"] = cfg

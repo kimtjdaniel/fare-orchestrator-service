@@ -81,9 +81,6 @@ func (b *Brain) shareLiveSearch(ctx context.Context, trip *models.Trip, sessionI
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
-	if trip.State != models.Searching && trip.State != models.BookingState && trip.State != models.AwaitingApproval && trip.State != models.Booked {
-		return b.say(ctx, trip.GroupID, "I'll send the live search page after the group finalizes the plan.", nil)
-	}
 	return b.shareLiveSearch(ctx, trip, "")
 }
 
@@ -344,7 +341,7 @@ func (b *Brain) sendPoll(ctx context.Context, groupID, name string, options []st
 	if len(opts) < 2 {
 		return nil
 	}
-	if err := b.Messenger.SendPoll(ctx, groupID, messaging.Poll{Name: name, Options: opts}); err != nil {
+	if _, err := b.Messenger.SendPoll(ctx, groupID, messaging.Poll{Name: name, Options: opts}); err != nil {
 		return err
 	}
 	if tripID != "" {
@@ -353,6 +350,36 @@ func (b *Brain) sendPoll(ctx context.Context, groupID, name string, options []st
 		}
 	}
 	return nil
+}
+
+func clipPollPair(options, values []string) ([]string, []string) {
+	seen := map[string]bool{}
+	opts := make([]string, 0, len(options))
+	vals := make([]string, 0, len(options))
+	for i, o := range options {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		if len(o) > 100 {
+			o = strings.TrimSpace(o[:97]) + "…"
+		}
+		key := strings.ToLower(o)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		opts = append(opts, o)
+		v := ""
+		if i < len(values) {
+			v = values[i]
+		}
+		vals = append(vals, v)
+		if len(opts) >= 12 {
+			break
+		}
+	}
+	return opts, vals
 }
 
 func clipPollOptions(opts []string) []string {
@@ -449,8 +476,12 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	if trip == nil {
 		return nil
 	}
-	if trip.State == models.Collecting && isIntakePoll(trip, vote.PollMessageID) {
-		return b.runIntakePollVote(ctx, trip, vote)
+	if trip.State == models.Collecting {
+		if findIntakePoll(trip, vote.PollMessageID, vote.PollName) != nil {
+			return b.runIntakePollVote(ctx, trip, vote)
+		}
+		// Old origin/date/budget polls must not restart plan() and its canned replies mid-intake.
+		return nil
 	}
 	if strings.Contains(strings.ToLower(vote.PollName), "paying") {
 		return b.applyPayerVote(ctx, trip, vote, selected)

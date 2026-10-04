@@ -41,7 +41,8 @@ type Button struct {
 
 type Messenger interface {
 	Send(ctx context.Context, groupID, text string, buttons []Button) error
-	SendPoll(ctx context.Context, groupID string, poll Poll) error
+	// SendPoll delivers a poll and returns the channel message id when the backend provides one.
+	SendPoll(ctx context.Context, groupID string, poll Poll) (string, error)
 	SendMedia(ctx context.Context, groupID, caption string, media Media) error
 }
 
@@ -84,8 +85,8 @@ func (m *ConsoleMessenger) Send(ctx context.Context, groupID, text string, butto
 	return nil
 }
 
-func (m *ConsoleMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
-	return m.Send(ctx, groupID, poll.Name+"\n"+strings.Join(poll.Options, " | "), nil)
+func (m *ConsoleMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) (string, error) {
+	return "", m.Send(ctx, groupID, poll.Name+"\n"+strings.Join(poll.Options, " | "), nil)
 }
 
 func (m *ConsoleMessenger) SendMedia(ctx context.Context, groupID, caption string, media Media) error {
@@ -153,7 +154,7 @@ func (m *RobotMessenger) Send(ctx context.Context, groupID, text string, buttons
 	return nil
 }
 
-func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
+func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) (string, error) {
 	payload := map[string]any{
 		"group_id": groupID,
 		"chat_id":  groupID,
@@ -168,11 +169,11 @@ func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.RobotURL+"/send", bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("content-type", "application/json")
 	if m.Token != "" {
@@ -180,13 +181,17 @@ func (m *RobotMessenger) SendPoll(ctx context.Context, groupID string, poll Poll
 	}
 	resp, err := m.HTTPClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("robot /send poll: status %d", resp.StatusCode)
+		return "", fmt.Errorf("robot /send poll: status %d", resp.StatusCode)
 	}
-	return nil
+	var parsed struct {
+		MessageID string `json:"message_id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&parsed)
+	return parsed.MessageID, nil
 }
 
 func (m *RobotMessenger) SendMedia(ctx context.Context, groupID, caption string, media Media) error {
@@ -276,7 +281,7 @@ func (m *TelegramMessenger) Send(ctx context.Context, groupID, text string, butt
 	return nil
 }
 
-func (m *TelegramMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) error {
+func (m *TelegramMessenger) SendPoll(ctx context.Context, groupID string, poll Poll) (string, error) {
 	buttons := make([]Button, 0, len(poll.Options))
 	for _, opt := range poll.Options {
 		payload := opt
@@ -285,7 +290,7 @@ func (m *TelegramMessenger) SendPoll(ctx context.Context, groupID string, poll P
 		}
 		buttons = append(buttons, Button{Label: opt, Payload: payload})
 	}
-	return m.Send(ctx, groupID, poll.Name, buttons)
+	return "", m.Send(ctx, groupID, poll.Name, buttons)
 }
 
 func (m *TelegramMessenger) SendMedia(ctx context.Context, groupID, caption string, media Media) error {

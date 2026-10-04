@@ -167,6 +167,11 @@ type TripIntake struct {
 	Vibe        FieldValue  `json:"vibe,omitempty" bson:"vibe,omitempty"`
 	Destination FieldValue  `json:"destination,omitempty" bson:"destination,omitempty"`
 	Constraints FieldValue  `json:"constraints,omitempty" bson:"constraints,omitempty"`
+	// Confirmed is set when the group accepts the package poll (destination, exact dates, budget).
+	Confirmed bool `json:"confirmed,omitempty" bson:"confirmed,omitempty"`
+	// Revision is set when someone votes to change that package, so the next turn asks what to change
+	// instead of posting the same poll again.
+	Revision bool `json:"revision,omitempty" bson:"revision,omitempty"`
 }
 
 // ParticipantIntake is the per-person half of spec §3's participants[] shape. Embedded as a
@@ -201,7 +206,9 @@ type Conflict struct {
 type IntakePoll struct {
 	PollMessageID  string              `json:"poll_message_id" bson:"poll_message_id"`
 	Field          string              `json:"field" bson:"field"`
+	Question       string              `json:"question,omitempty" bson:"question,omitempty"`
 	Options        []string            `json:"options" bson:"options"`
+	OptionValues   []string            `json:"option_values,omitempty" bson:"option_values,omitempty"` // parallel to Options; ISO or canonical values
 	Multi          bool                `json:"multi" bson:"multi"`
 	ExpectedVoters []string            `json:"expected_voters,omitempty" bson:"expected_voters,omitempty"`
 	Votes          map[string][]string `json:"votes" bson:"votes"` // voter_id -> selected option labels

@@ -48,7 +48,7 @@ var (
 	// One person stating facts about another (or about "he/she") — origin, dates, budget.
 	proxyPrefRe      = regexp.MustCompile(`(?i)(flying from|flies from|leaving from|leave from|not available|i know \w+'?s|\b(he|she|they)'s (flying|not|busy)|\b(his|her|their) (schedule|dates|flight))`)
 	prefFactRe       = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
-	itineraryAskRe   = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|day[- ]?to[- ]?day|each day|every day|detailed (?:\w+\s+){0,3}plan|plan (?:for )?each day|things to do|what to visit|go visit|full \d+\s*-?\s*days?|day\s*\d+|neighbourhood|neighborhood|hidden gem)`)
+	itineraryAskRe   = regexp.MustCompile(`(?i)(itinerar|inten[ae]ry|itinerary|day[- ]?by[- ]?day|day[- ]?to[- ]?day|each day|every day|detailed (?:\w+\s+){0,3}plan|plan (?:for )?each day|things to do|what to visit|go visit|full \d+\s*-?\s*days?|day\s*\d+|neighbourhood|neighborhood|hidden gem)`)
 	restaurantAskRe  = regexp.MustCompile(`(?i)\b(restaurants?|where to eat|places to eat|dinner spots?|food recs?|what (should|can|do) we eat|best (pizza|pasta|eats)|wine bars?|trattoria|where (?:are|should) we (?:eat|dine))\b`)
 	restaurantListRe = regexp.MustCompile(`(?i)\b(top\s*\d+\s*restaurants?|list(?:\s+\w+){0,8}\s+restaurants?|restaurants?\s+by\s+(?:stars?|rating|maps)|best\s+restaurants?)\b`)
 	introAskRe       = regexp.MustCompile(`(?i)\b(introduce yourself|intro yourself|who are you|what (can|do) you do|what are you capable of|your capabilities|what can fare do)\b`)
@@ -58,7 +58,8 @@ var (
 	sendItRe         = regexp.MustCompile(`(?i)^\s*(?:(?:ok|okay|sure|perfect|yes|yeah|please)[,!]?\s+)*(?:send (?:it|them|that|those|the (?:map|pin|link))|(?:send|show)(?:\s+\w+){0,3}\s+(?:map|pin))\b`)
 	whoPaysRe        = regexp.MustCompile(`(?i)\bwho(?:'?s| is) paying\b|\bwho(?:'?s| is) (?:putting|on) the card\b`)
 	iPayRe           = regexp.MustCompile(`(?i)\b(i('ll| will) (pay|cover|get (this|it))|i('m| am) paying|charge (it to )?me|put it on me|i'll get (the|this))\b`)
-	statusAskRe      = regexp.MustCompile(`(?i)\b(update me|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked|which dates|what dates|when (?:are|do) we (?:go|leave|fly|heading))\b`)
+	statusAskRe      = regexp.MustCompile(`(?i)\b(update me|updates?\b|what'?s (?:going on|locked|the (?:status|plan|quote)|booked)|status of (?:the )?trip|recap|where are we (?:at|now)|what(?:'s| is) locked|which dates|what dates|when (?:are|do) we (?:go|leave|fly|heading)|how much|talk me through|finances)\b`)
+	thanksOnlyRe     = regexp.MustCompile(`(?i)^\s*(?:@\S+\s+)*(?:thanks|thank you|ty|cheers)[\s!.]*$`)
 	flightAskRe      = regexp.MustCompile(`(?i)\b(flights?|airfare|airfares|plane tickets?|outbound|return flight|what about the flyin)\b`)
 	cheaperAskRe     = regexp.MustCompile(`(?i)\b(cheaper|less expensive|too (?:much|expensive)|lower (?:the )?price|save (?:money|on)|cut (?:the )?cost)\b`)
 	foodMoneyRe      = regexp.MustCompile(`(?i)\b(factor in food|include food|food (?:cost|in (?:that|this|the total))|does that include food|is food (?:in|included)|how (?:did we|do you) get to)\b`)
@@ -288,6 +289,33 @@ func looksLikeFoodMoneyAsk(text string) bool {
 
 func looksLikeStatusAsk(text string) bool {
 	return statusAskRe.MatchString(text)
+}
+
+func looksLikeAdvisorAsk(text string) bool {
+	return looksLikeItineraryAsk(text) || looksLikeRestaurantAsk(text) || looksLikeStatusAsk(text) ||
+		looksLikeDashboardAsk(text) || looksLikeFoodMoneyAsk(text) || thanksOnlyRe.MatchString(text)
+}
+
+func (b *Brain) answerDuringIntake(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	trip = b.syncTripBasics(ctx, trip, m.Text)
+	if looksLikeDashboardAsk(m.Text) {
+		link := b.tripPageURL(ctx, trip, "")
+		if link != "" {
+			return b.say(ctx, trip.GroupID, "Here's the trip page:\n"+link, nil)
+		}
+	}
+	if looksLikeItineraryAsk(m.Text) {
+		if looksLikeRestaurantAsk(m.Text) {
+			if err := b.writeRestaurantPlan(ctx, trip, m); err != nil {
+				slog.Warn("restaurant list failed", "group_id", trip.GroupID, "err", err)
+			}
+		}
+		return b.writeAdvisorItinerary(ctx, trip, m)
+	}
+	if looksLikeRestaurantAsk(m.Text) {
+		return b.writeRestaurantPlan(ctx, trip, m)
+	}
+	return b.answerQuestion(ctx, trip, m)
 }
 
 func looksLikeFlightAsk(text string) bool {
@@ -622,6 +650,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	}
 
 	if trip.State == models.Booked {
+		if looksLikeAdvisorAsk(m.Text) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
+			return b.answerDuringIntake(ctx, trip, m)
+		}
 		if looksLikeDirectQuestion(m.Text) && !looksLikeReplan(m.Text) && !looksLikeCancelBooking(m.Text) {
 			return b.answerQuestion(ctx, trip, m)
 		}
@@ -707,6 +738,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 	case models.AwaitingChoice, models.AwaitingApproval:
 		return b.onReply(ctx, trip, m)
 	case models.Searching, models.BookingState:
+		if looksLikeAdvisorAsk(m.Text) && (m.Tagged || looksLikeDirectQuestion(m.Text)) {
+			return b.answerDuringIntake(ctx, trip, m)
+		}
 		if m.Tagged || looksLikeDirectQuestion(m.Text) {
 			return b.answerQuestion(ctx, trip, m)
 		}
@@ -758,14 +792,13 @@ func (b *Brain) startNewTrip(ctx context.Context, previous *models.Trip, m model
 	if err != nil {
 		return err
 	}
-	stop, trip, err := b.maybeIntroduce(ctx, trip, m)
-	if err != nil || stop {
-		return err
-	}
-	return b.plan(ctx, trip, m.Text, m)
+	return b.runIntakeTurn(ctx, trip, m)
 }
 
 func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, incoming models.IncomingMessage) error {
+	if shouldUseIntake(trip) {
+		return b.runIntakeTurn(ctx, trip, incoming)
+	}
 	if b.Dashboard != nil {
 		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
 			return err
@@ -825,10 +858,10 @@ func (b *Brain) plan(ctx context.Context, trip *models.Trip, feedback string, in
 		people = applyHarvest(nil, harvested, incoming.Participants)
 	}
 	if len(people) == 0 {
-		if trip.AskedDates && trip.AskedOrigin {
-			return nil
-		}
-		return b.say(ctx, trip.GroupID, "Catch me up on where you'd fly out of and which dates could work.", nil)
+		people = append([]models.Participant(nil), trip.Participants...)
+	}
+	if len(people) == 0 {
+		return b.runIntakeTurn(ctx, trip, incoming)
 	}
 	for i := range people {
 		if people[i].PID == "" {
@@ -1101,6 +1134,9 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 	case kind == "cheaper":
 		return b.offerCheaperFlights(ctx, trip, m)
 	case kind == "question", kind == "other":
+		if looksLikeAdvisorAsk(m.Text) {
+			return b.answerDuringIntake(ctx, trip, m)
+		}
 		return b.answerQuestion(ctx, trip, m)
 	case kind == "approve" && trip.State == models.AwaitingChoice:
 		return b.handleBookAsk(ctx, trip, m)
@@ -1243,17 +1279,23 @@ func tripFacts(trip *models.Trip) map[string]any {
 }
 
 func (b *Brain) answerQuestion(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {
+	if looksLikeDashboardAsk(m.Text) {
+		link := b.tripPageURL(ctx, trip, "")
+		if link != "" {
+			return b.say(ctx, trip.GroupID, "Here's the trip page:\n"+link, nil)
+		}
+	}
 	facts, err := json.Marshal(tripFacts(trip))
 	if err != nil {
 		return err
 	}
-	history, _ := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 30, true)
+	history, _ := b.Store.GetMessages(ctx, trip.GroupID, trip.HistoryStart, 40, true)
 	user := fmt.Sprintf("Latest WhatsApp message from %s:\n%s\n", m.SenderName, m.Text)
 	if q := quotedText(m); q != "" {
 		user += "They are quoting this bot/group line:\n" + q + "\n"
 	}
 	user += "\nLOCKED TRIP FACTS (JSON). Use these. Inventing prices or airports is not allowed.\n" + string(facts)
-	user += "\n\nRecent chat:\n" + compactChat(history, 12)
+	user += "\n\nRecent chat:\n" + compactChat(history, 24)
 	user += "\n\nReply to the latest message only. Never claim you are sending a photo or picture. If they asked about the hotel, name the stay — a Google Maps pin is sent separately."
 	slog.Info("calling gemini", "stage", "reply", "from", m.SenderName, "text", clipLog(m.Text, 80))
 	answer, err := b.LLM.Agent(ctx, prompts.AgentSystem(b.Config.BotName, string(facts)),
@@ -1419,10 +1461,11 @@ func (b *Brain) handleBookAsk(ctx context.Context, trip *models.Trip, m models.I
 		if err != nil {
 			return err
 		}
-		if looksLikeSearchAsk(m.Text) || trip.LastPoll == "finalize" {
+		trip = b.syncTripBasics(ctx, trip, m.Text)
+		if looksLikeSearchAsk(m.Text) || looksLikeDashboardAsk(m.Text) || strings.Contains(m.Text, "✅") || trip.LastPoll == "finalize" || airportFromLabel(m.Text) != "" {
 			return b.startTravelSearch(ctx, trip)
 		}
-		return b.offerPlanFinalize(ctx, trip)
+		return b.offerPlanFinalize(ctx, trip, m.Text)
 	}
 }
 
@@ -1499,14 +1542,20 @@ func bookableOption(trip *models.Trip) int {
 }
 
 func tripDestination(trip *models.Trip) string {
+	if trip == nil {
+		return ""
+	}
 	if trip.Destination != "" {
 		return trip.Destination
 	}
 	if o := trip.ChosenOption(); o != nil && o.Destination != "" {
 		return o.Destination
 	}
-	if len(trip.Options) > 0 {
+	if len(trip.Options) > 0 && trip.Options[0].Destination != "" {
 		return trip.Options[0].Destination
+	}
+	if trip.Intake != nil && trip.Intake.Destination.Known() {
+		return trip.Intake.Destination.AsString()
 	}
 	return ""
 }
@@ -1566,7 +1615,7 @@ func (b *Brain) generateAdvisorItinerary(ctx context.Context, trip *models.Trip,
 	if dest == "" {
 		return trip, nil, nil
 	}
-	if out := advisorMap(trip); out != nil {
+	if out := advisorMap(trip); out != nil && !looksLikeItineraryAsk(request) && !looksLikeRestaurantAsk(request) {
 		if days, _ := out["days"].([]any); len(days) > 0 {
 			return trip, out, nil
 		}
@@ -1582,6 +1631,8 @@ func (b *Brain) generateAdvisorItinerary(ctx context.Context, trip *models.Trip,
 	dates := ""
 	if trip.EmbarkingDate != "" {
 		dates = formatting.Dates(trip.EmbarkingDate, trip.ReturningDate)
+	} else if trip.Intake != nil && trip.Intake.ExactDates != nil {
+		dates = formatting.Dates(trip.Intake.ExactDates.Depart, trip.Intake.ExactDates.Return)
 	}
 	factsJSON, _ := json.Marshal(tripFacts(trip))
 	user := fmt.Sprintf("City: %s\nDays: %d\nDates: %s\nOrigin: %s\nTastes: %s\nRequest: %s\n\n%s\nLOCKED FACTS:\n%s\n\nDay 1 arrival must match the inbound flight airport in locked facts. Do not invent fares, hotels, or airports. Do estimate meal CAD for itinerary only.\n",
@@ -1673,7 +1724,7 @@ func planGaps(trip *models.Trip) []string {
 	if len(trip.Participants) == 0 {
 		gaps = append(gaps, "who's going")
 	}
-	if strings.TrimSpace(trip.Origin) == "" && originAirportCode(trip.Origin, trip.Participants) == "" {
+	if originAirportCode(trip.Origin, trip.Participants) == "" {
 		gaps = append(gaps, "where you're flying from")
 	}
 	if strings.TrimSpace(tripDestination(trip)) == "" {
@@ -1685,7 +1736,8 @@ func planGaps(trip *models.Trip) []string {
 	return gaps
 }
 
-func (b *Brain) offerPlanFinalize(ctx context.Context, trip *models.Trip) error {
+func (b *Brain) offerPlanFinalize(ctx context.Context, trip *models.Trip, hint string) error {
+	trip = b.syncTripBasics(ctx, trip, hint)
 	if trip.State == models.Collecting {
 		updated, err := store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
 		if err != nil {
@@ -1695,9 +1747,32 @@ func (b *Brain) offerPlanFinalize(ctx context.Context, trip *models.Trip) error 
 			trip = updated
 		}
 	}
-	gaps := planGaps(trip)
-	if len(gaps) > 0 {
-		return b.say(ctx, trip.GroupID, "Almost — still need "+strings.Join(gaps, ", ")+" before I can send a full summary to finalize.", nil)
+	if trip.Intake != nil && !searchEssentials(trip) {
+		if trip.State != models.Collecting {
+			updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
+			if err != nil {
+				return err
+			}
+			if updated != nil {
+				trip = updated
+			}
+		}
+		return b.continueIntake(ctx, trip, nil)
+	}
+	if len(planGaps(trip)) == 0 && (looksLikeDashboardAsk(hint) || looksLikeSearchAsk(hint) || approveOnlyRe.MatchString(hint) || strings.Contains(hint, "✅")) {
+		return b.startTravelSearch(ctx, trip)
+	}
+	if len(planGaps(trip)) > 0 {
+		if trip.State != models.Collecting {
+			updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
+			if err != nil {
+				return err
+			}
+			if updated != nil {
+				trip = updated
+			}
+		}
+		return b.continueIntake(ctx, trip, nil)
 	}
 	trip, _, err := b.generateAdvisorItinerary(ctx, trip, "Write the full day-by-day plan for this group.", "group")
 	if err != nil {
@@ -1707,6 +1782,61 @@ func (b *Brain) offerPlanFinalize(ctx context.Context, trip *models.Trip) error 
 		return err
 	}
 	return b.sendPoll(ctx, trip.GroupID, "Finalize this plan?", []string{"Yes, search flights and hotels", "Not yet"}, "finalize", trip.ID)
+}
+
+func (b *Brain) syncTripBasics(ctx context.Context, trip *models.Trip, hint string) *models.Trip {
+	if trip == nil {
+		return trip
+	}
+	fields := map[string]any{}
+	origin := originAirportCode(firstNonEmpty(trip.Origin, hint), trip.Participants)
+	if origin == "" {
+		h := harvestText(hint, b.today())
+		origin = originAirportCode(strings.TrimSpace(h.Airport+" "+h.City), nil)
+	}
+	if origin != "" && !strings.EqualFold(trip.Origin, origin) {
+		fields["origin"] = origin
+		trip.Origin = origin
+		for i := range trip.Participants {
+			if trip.Participants[i].OriginAirport == "" {
+				trip.Participants[i].OriginAirport = origin
+				if trip.Participants[i].Intake != nil && !trip.Participants[i].Intake.Origin.Known() {
+					trip.Participants[i].Intake.Origin = models.FieldValue{Value: origin, Confidence: models.Confirmed, UpdatedAt: models.Now()}
+				}
+				fields["participants"] = trip.Participants
+				break
+			}
+		}
+	}
+	if trip.Intake != nil {
+		if strings.TrimSpace(trip.Destination) == "" && trip.Intake.Destination.Known() {
+			fields["destination"] = trip.Intake.Destination.AsString()
+			trip.Destination = trip.Intake.Destination.AsString()
+		}
+		if trip.Intake.ExactDates != nil && strings.TrimSpace(trip.EmbarkingDate) == "" {
+			fields["embarking_date"] = trip.Intake.ExactDates.Depart
+			fields["returning_date"] = trip.Intake.ExactDates.Return
+			trip.EmbarkingDate = trip.Intake.ExactDates.Depart
+			trip.ReturningDate = trip.Intake.ExactDates.Return
+		}
+	}
+	if len(fields) == 0 {
+		return trip
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, fields)
+	if err != nil || updated == nil {
+		return trip
+	}
+	return updated
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // selectOption flattens the chosen Option onto the trip, then sends a full plan summary
@@ -1776,12 +1906,27 @@ func (b *Brain) selectOption(ctx context.Context, trip *models.Trip, number int)
 	if err != nil {
 		return b.say(ctx, trip.GroupID, fmt.Sprintf("I only put up 1–%d. Which of those?", len(trip.Options)), nil)
 	}
-	return b.offerPlanFinalize(ctx, trip)
+	return b.offerPlanFinalize(ctx, trip, "")
 }
 
 func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error {
+	if trip.Intake != nil && !searchEssentials(trip) {
+		if trip.State != models.Collecting {
+			updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
+			if err != nil {
+				return err
+			}
+			if updated != nil {
+				trip = updated
+			}
+		}
+		return b.continueIntake(ctx, trip, nil)
+	}
 	option := trip.ChosenOption()
 	if option == nil {
+		if trip.Intake != nil {
+			return b.continueIntake(ctx, trip, nil)
+		}
 		return b.say(ctx, trip.GroupID, "Pick a destination first, then I'll send the plan to finalize.", nil)
 	}
 	if option.DestinationAirport == "" {
@@ -1789,7 +1934,25 @@ func (b *Brain) startTravelSearch(ctx context.Context, trip *models.Trip) error 
 			option.DestinationAirport = cands[0]
 		}
 	}
-	if option.EmbarkingDate == "" || option.ReturningDate == "" {
+	if !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
+		if trip.Intake != nil && trip.Intake.ExactDates != nil && isoDateOK(trip.Intake.ExactDates.Depart) && isoDateOK(trip.Intake.ExactDates.Return) {
+			option.EmbarkingDate = trip.Intake.ExactDates.Depart
+			option.ReturningDate = trip.Intake.ExactDates.Return
+		}
+	}
+	if !isoDateOK(option.EmbarkingDate) || !isoDateOK(option.ReturningDate) {
+		if trip.Intake != nil {
+			if trip.State != models.Collecting {
+				updated, err := store.SetState(ctx, b.Store, trip.ID, models.Collecting, nil)
+				if err != nil {
+					return err
+				}
+				if updated != nil {
+					trip = updated
+				}
+			}
+			return b.continueIntake(ctx, trip, nil)
+		}
 		dates := allStoredDates(trip.Participants)
 		if len(dates) >= 2 {
 			option.EmbarkingDate = dates[0]
@@ -1991,26 +2154,41 @@ func destAirportCandidates(airport, dest string) []string {
 }
 
 func originAirportCode(origin string, people []models.Participant) string {
-	if len(people) > 0 && strings.TrimSpace(people[0].OriginAirport) != "" {
-		return strings.ToUpper(strings.TrimSpace(people[0].OriginAirport))
+	for _, p := range people {
+		if code := airportFromLabel(p.OriginAirport); code != "" {
+			return code
+		}
+		if code := airportFromLabel(p.Origin); code != "" {
+			return code
+		}
+		if code := airportFromLabel(p.OriginCity); code != "" {
+			return code
+		}
+		if p.Intake != nil {
+			if code := airportFromLabel(p.Intake.Origin.AsString()); code != "" {
+				return code
+			}
+		}
 	}
-	o := strings.ToUpper(strings.TrimSpace(origin))
-	if len(o) == 3 && o[0] >= 'A' && o[0] <= 'Z' {
-		return o
+	return airportFromLabel(origin)
+}
+
+func airportFromLabel(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
 	}
-	low := strings.ToLower(origin)
-	switch {
-	case strings.Contains(low, "vancouver"):
-		return "YVR"
-	case strings.Contains(low, "toronto"):
-		return "YYZ"
-	case strings.Contains(low, "calgary"):
-		return "YYC"
-	case strings.Contains(low, "montreal"):
-		return "YUL"
-	default:
-		return o
+	up := strings.ToUpper(s)
+	low := strings.ToLower(s)
+	for city, code := range cityAirport {
+		if strings.Contains(low, city) || strings.Contains(up, code) {
+			return code
+		}
 	}
+	if len(s) == 3 {
+		return up
+	}
+	return ""
 }
 
 func (b *Brain) offerCheaperFlights(ctx context.Context, trip *models.Trip, m models.IncomingMessage) error {

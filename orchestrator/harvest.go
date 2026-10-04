@@ -115,6 +115,14 @@ func harvestText(text string, today time.Time) harvestedFacts {
 		}
 	}
 	h.Dates = fillDateRange(h.Dates)
+	if len(h.Dates) == 0 && strings.Contains(low, "weekend") {
+		start, end := comingWeekend(today)
+		if strings.Contains(low, "next weekend") {
+			start = start.AddDate(0, 0, 7)
+			end = end.AddDate(0, 0, 7)
+		}
+		h.Dates = dateList(start, end)
+	}
 	if len(h.Dates) == 0 {
 		h.Dates = monthOnlyDates(text, today)
 	}

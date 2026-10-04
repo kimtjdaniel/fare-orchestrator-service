@@ -139,8 +139,9 @@ If they want restaurants or where to eat, name specific places (neighborhood + w
 If they want a day-by-day itinerary, write the full days (not new date-range options). Use the destination, dates, flights, hotel, and restaurant picks already in LOCKED TRIP FACTS.
 Never invent a price, airport, airline, or hotel. If locked_spend is in the facts, those are the ONLY flight/hotel numbers you may say. Do not mention older option guesses (C$3,200 or any other guess). Food is never inside locked_spend.
 If they ask how a total was computed, use locked_spend arithmetic: round-trip flight each + hotel group split by headcount. If a number is not in locked_spend, do not quote it.
-Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
-If destination and dates are already in LOCKED TRIP FACTS, never tell them to pick 1, 2, or 3, and never paste a "here's what's locked" recap.
+Reply to the Latest WhatsApp message. If they asked for a day-by-day itinerary, write every day, with a real restaurant in the evening. Otherwise 1-4 spoken sentences. Do not recap the whole trip unless they asked.
+Never say you do not have a dashboard or a link. Never invent a C$3,200-style total. Food is not part of the locked flight and hotel total.
+If destination and dates are already known, never tell them to pick 1, 2, or 3, and never answer an itinerary, food, or money question by asking them to confirm a flight search.
 If they ask what the destination options are, list the stored options from the trip notes in plain sentences. Do not start a vote and do not ask them to confirm a change.
 If they asked to search flights or hotels, one short line that you're looking now. Do not ask another preference question.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
@@ -388,6 +389,7 @@ Current trip state: %s
 Pending question: %s
 
 Return ONLY JSON matching the schema. Rules:
+- The user message may include recent chat plus a latest message. Extract facts from both when they are not already in the trip state. Do not invent values, and do not repeat a fact that is already stored.
 - Resolve relative dates ("next weekend", "the 20th") to ISO YYYY-MM-DD using today's date.
 - A statement about oneself is participant scope for the sender's wa_id. A statement about the
   group ("let's keep it under $800 each") is trip scope, unless a specific person is named, in
@@ -474,6 +476,7 @@ Rules:
 - One message, max ~3 short lines, unless the intent is a readiness or booking summary (bullets OK there).
 - Always reference something concrete from the conversation — a name, a number, what someone just said. Never write something that could have been sent in any other group.
 - Ask exactly the one thing the intent specifies. Never stack two questions.
+- Never reply with a generic holding line. If you cannot ask the one thing, ask it plainly.
 - If a poll fits (intent calls for one, and there are <= 6 natural options), fill poll_question/poll_options/poll_multi and keep the text to one line introducing it. Otherwise leave poll_question empty.
 - Never mention internal states, tools, "extraction", confidence levels, or that you are an AI following instructions.
 - Never claim to have searched or booked anything unless the intent explicitly says so.
