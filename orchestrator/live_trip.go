@@ -70,7 +70,7 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		}
 		b.Handle(ctx, models.IncomingMessage{
 			GroupID: groupID, GroupName: trip.GroupName,
-			SenderID: "dashboard:"+actor, SenderName: actor,
+			SenderID: "dashboard:" + actor, SenderName: actor,
 			Text: text, Tagged: true,
 		})
 		fresh, err := b.Store.GetTrip(ctx, groupID)
@@ -103,6 +103,40 @@ func (b *Brain) DashboardAct(ctx context.Context, groupID string, body map[strin
 		itin["selected_hotel"] = offer
 		itin["selected_hotel_id"] = strAny(offer["offer_id"])
 		itin["hotel"] = offer
+		var hotel models.HotelOffer
+		if err := decodeInto(offer, &hotel); err != nil {
+			return nil, err
+		}
+		checkIn, _ := models.ParseDate(orStr(hotel.CheckIn, trip.EmbarkingDate))
+		checkOut, _ := models.ParseDate(orStr(hotel.CheckOut, trip.ReturningDate))
+		accommodations := append([]models.Accommodation(nil), trip.Accommodations...)
+		if len(accommodations) == 0 {
+			accommodations = []models.Accommodation{{}}
+		}
+		// Preserve existing booking state while carrying the selected offer's provenance.
+		accommodation := &accommodations[0]
+		if accommodation.BookingStatus == "" {
+			accommodation.BookingStatus = models.StatusIncomplete
+		}
+		accommodation.CheckInDate, accommodation.CheckOutDate = checkIn, checkOut
+		accommodation.Rating, accommodation.Costs, accommodation.BookingURL = hotel.Rating, &hotel.TotalPrice, hotel.CheckoutURL
+		accommodation.Source, accommodation.PropertyType = hotel.Source, hotel.PropertyType
+		accommodation.OriginalRating, accommodation.OriginalRatingScale = hotel.OriginalRating, hotel.OriginalRatingScale
+		accommodation.PriceNote = hotel.PriceNote
+		fields["accommodations"] = accommodations
+		if existing := asMapAny(itin["dashboard_plan"]); len(existing) > 0 {
+			plan := cloneMap(existing)
+			guests := len(trip.Participants)
+			if guests < 1 {
+				guests = 1
+			}
+			plan["hotel"], plan["hotelOfferId"] = hotel.Name, hotel.OfferID
+			plan["hotelPrice"] = hotel.TotalPrice / float64(guests)
+			plan["hotelSource"], plan["hotelPropertyType"] = hotel.Source, hotel.PropertyType
+			plan["hotelOriginalRating"], plan["hotelOriginalRatingScale"] = hotel.OriginalRating, hotel.OriginalRatingScale
+			plan["hotelPriceNote"] = hotel.PriceNote
+			itin["dashboard_plan"] = plan
+		}
 		fields["itinerary"] = itin
 	case "set_budget":
 		note := strAny(body["budget"])
@@ -345,6 +379,9 @@ func dashViewHotels(itin map[string]any) []map[string]any {
 			"offer_id": id, "name": strAny(m["name"]), "city": strAny(m["city"]),
 			"nightly": floatOr(m["price_per_night"]), "total": floatOr(m["total_price"]),
 			"rating": numAny(m["rating"]), "image": strAny(m["image_url"]),
+			"source": m["source"], "property_type": m["property_type"],
+			"original_rating": m["original_rating"], "original_rating_scale": m["original_rating_scale"],
+			"price_note": m["price_note"], "checkout_url": m["checkout_url"],
 			"selected": id != "" && id == selID,
 		})
 	}
