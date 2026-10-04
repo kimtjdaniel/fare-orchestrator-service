@@ -11,12 +11,15 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"fare-brain/models"
 	"fare-brain/state"
 )
+
+var ErrItineraryConflict = errors.New("plan changed — refresh and try again")
 
 type Store interface {
 	Connect(ctx context.Context) error
@@ -34,6 +37,7 @@ type Store interface {
 	// moves back to Collecting, so old chat history doesn't leak into the new extraction.
 	ResetTrip(ctx context.Context, tripID, groupName string) (*models.Trip, error)
 	UpdateTrip(ctx context.Context, tripID string, fields map[string]any) (*models.Trip, error)
+	UpdateItinerary(ctx context.Context, expected *models.Trip, itinerary map[string]any) (*models.Trip, error)
 
 	GetWhatsAppSession(ctx context.Context, id string) (*models.WhatsAppSession, error)
 	SaveWhatsAppSession(ctx context.Context, id string, data map[string]any) (*models.WhatsAppSession, error)
@@ -90,7 +94,7 @@ var allowedTripFields = map[string]bool{
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 	"pending_trip_request": true,
-	"organizer_wa_id": true, "intake": true, "pending_question": true, "conflicts": true,
+	"organizer_wa_id":      true, "intake": true, "pending_question": true, "conflicts": true,
 	"intake_polls": true, "last_agent_text": true,
 }
 
@@ -117,6 +121,7 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			}
 		case "itinerary":
 			trip.Itinerary, _ = v.(map[string]any)
+			trip.ItineraryRevision++
 		case "approved_by":
 			trip.ApprovedBy, _ = v.(string)
 		case "pending_approver":

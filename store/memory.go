@@ -152,3 +152,18 @@ func (s *MemoryStore) SaveWhatsAppSession(ctx context.Context, id string, data m
 	cp := *sess
 	return &cp, nil
 }
+
+func (s *MemoryStore) UpdateItinerary(ctx context.Context, expected *models.Trip, itinerary map[string]any) (*models.Trip, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.trips[expected.ID]
+	if t == nil || t.ItineraryRevision != expected.ItineraryRevision || !t.UpdatedAt.Equal(expected.UpdatedAt) {
+		return nil, ErrItineraryConflict
+	}
+	cp := *t
+	if err := applyTripFields(&cp, map[string]any{"itinerary": itinerary}); err != nil {
+		return nil, err
+	}
+	s.trips[expected.ID] = &cp
+	return &cp, nil
+}
