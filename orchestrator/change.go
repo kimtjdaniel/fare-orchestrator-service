@@ -132,21 +132,6 @@ func (b *Brain) rememberRoster(ctx context.Context, trip *models.Trip, incoming 
 	}
 }
 
-func (b *Brain) maybeGateDetails(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
-	if trip == nil || strings.TrimSpace(m.Text) == "" {
-		return false, nil
-	}
-	if looksLikeBookAsk(m.Text) || looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) || looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeHotelAsk(m.Text) || looksLikeRestaurantAsk(m.Text) || looksLikeIntroAsk(m.Text) || looksLikeWhoPays(m.Text) {
-		return false, nil
-	}
-	change := b.proposedLockedChange(trip, m.Text)
-	if change == nil {
-		return false, nil
-	}
-	change.ProposedBy = m.SenderID
-	return true, b.startChangePoll(ctx, trip, m, change)
-}
-
 func (b *Brain) proposedLockedChange(trip *models.Trip, text string) *models.PendingChange {
 	if looksLikeBookAsk(text) {
 		return nil

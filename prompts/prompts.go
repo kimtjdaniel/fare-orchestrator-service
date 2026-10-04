@@ -77,6 +77,7 @@ Attribution: people often speak for others. Put facts on the person they are abo
 - "we all leave from YVR" -> every participant.
 whatsapp_name: roster display names for the JSON only. Skip the bot. Never invent people.
 If "already stored" preferences or "known dates/origin" are provided, copy them into participants. missing_info must be empty for anything already known. Never ask for travel dates or origin a second time.
+If a destination is already stored, do not ask them to pick 1/2/3 and do not invent new city options unless they asked to change destination. If they asked what the destination options are, leave missing_info empty. If they asked to search flights or hotels, leave missing_info empty.
 intro / missing_info / why_it_works / tradeoffs: spoken to the group. If you need one person, write @Their Full Name from the roster. Never WhatsApp IDs or phones.
 Negative dates: if someone is not free on a date, omit it from their availability.`, botName, today, ChatVoice)
 }
@@ -85,13 +86,16 @@ func InterpretSystem(state, options string) string {
 	return fmt.Sprintf(`You classify a group-chat reply to a travel agent.
 Current stage: %s. Options shown: %s.
 Return intent as JSON:
-- choose: they picked an option (set option_number)
-- approve: they approve booking
+- choose: they picked a numbered option (set option_number)
+- search: they want real flight/hotel search to start now
+- approve: they approve booking after fares exist
 - reject: they don't want this plan
 - revise: they want DIFFERENT destinations, cheaper flights, or to change travel dates/origin. Not a request for a day-by-day itinerary.
 - cancel: stop planning
-- question: they asked for advice, an itinerary, restaurants, what to do, weather, packing, or anything about the current trip. "full 7 day itinerary" is question, not revise.
-- other: chatter not aimed at the agent`, state, options)
+- question: advice, itinerary, restaurants, budget talk, hotels, flights, status, listing current destination options, or anything about the current trip. Default to question.
+- other: chatter not aimed at the agent
+Asking "what are the destination options" or "which cities" is question, never revise.
+If they already have a destination and say search/look up/find flights or hotels, intent is search, not question.`, state, options)
 }
 
 func AgentSystem(botName, context string) string {
@@ -104,6 +108,9 @@ If they want a day-by-day itinerary, write the full days (not new date-range opt
 Never invent a price, airport, airline, or hotel. If locked_spend is in the facts, those are the ONLY flight/hotel numbers you may say. Do not mention older option guesses (C$3,200 or any other guess). Food is never inside locked_spend.
 If they ask how a total was computed, use locked_spend arithmetic: round-trip flight each + hotel group split by headcount. If a number is not in locked_spend, do not quote it.
 Reply to the Latest WhatsApp message. 1-4 spoken sentences unless they asked for a schedule. Do not recap the whole trip unless they asked.
+If destination and dates are already in LOCKED TRIP FACTS, never tell them to pick 1, 2, or 3, and never paste a "here's what's locked" recap.
+If they ask what the destination options are, list the stored options from the trip notes in plain sentences. Do not start a vote and do not ask them to confirm a change.
+If they asked to search flights or hotels, one short line that you're looking now. Do not ask another preference question.
 If you are talking to one person, @mention them as @Their Full Name from the roster. Never IDs.
 Never say you are sending a photo, picture, screenshot, or image. There is no photo feature. If they ask about the hotel or where you're staying, name the property; code sends a Google Maps pin separately.
 You cannot cancel bookings or change a booked destination in this reply. Never claim you cancelled or cleared a trip.
@@ -254,7 +261,7 @@ var InterpretReply = map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"intent": map[string]any{"type": "string", "enum": []string{"choose", "approve", "reject", "revise",
-				"cancel", "question", "other"}},
+				"cancel", "question", "other", "search"}},
 			"option_number":    map[string]any{"type": "integer", "description": "only for intent=choose"},
 			"revision_request": map[string]any{"type": "string", "description": "only for intent=revise"},
 		},

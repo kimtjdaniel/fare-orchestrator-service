@@ -50,7 +50,7 @@ func looksLikeReplan(text string) bool {
 	return parseDestination(text) != ""
 }
 
-func (b *Brain) tripPageURL(ctx context.Context, trip *models.Trip) string {
+func (b *Brain) tripPageURL(ctx context.Context, trip *models.Trip, sessionID string) string {
 	base := ""
 	if b.Config != nil {
 		base = strings.TrimSpace(b.Config.DashboardURL)
@@ -60,35 +60,19 @@ func (b *Brain) tripPageURL(ctx context.Context, trip *models.Trip) string {
 		gid = strings.TrimSpace(trip.ID)
 	}
 	gid = models.CanonicalGroupID(gid)
-	sid := ""
-	if b.Dashboard != nil {
-		if id, err := b.Dashboard.Begin(ctx, trip); err == nil {
-			sid = id
-		} else {
-			sid, _ = b.Dashboard.CurrentID(ctx, gid)
-		}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" && b.Dashboard != nil {
+		sid, _ = b.Dashboard.CurrentID(ctx, gid)
 	}
 	return formatting.SessionLink(base, gid, sid)
 }
 
-func (b *Brain) dashboardOnce(ctx context.Context, trip *models.Trip) string {
-	if trip.SharedDashboard {
-		return ""
-	}
-	return b.tripPageURL(ctx, trip)
-}
-
-func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
-	if b.Dashboard != nil {
-		if _, err := b.Dashboard.Begin(ctx, trip); err != nil {
-			return err
-		}
-	}
-	link := b.tripPageURL(ctx, trip)
+func (b *Brain) shareLiveSearch(ctx context.Context, trip *models.Trip, sessionID string) error {
+	link := b.tripPageURL(ctx, trip, sessionID)
 	if link == "" {
 		return b.say(ctx, trip.GroupID, "I don't have a trip page set up to send.", nil)
 	}
-	text := "Watch the flight and hotel agents live:\n" + link + "\nItinerary, money, and chat stay in sync on that page."
+	text := "Watch the flight and hotel search live:\n" + link
 	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
 		return err
 	}
@@ -96,23 +80,22 @@ func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
 	return err
 }
 
-func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string, options []models.Option) error {
-	url := b.dashboardOnce(ctx, trip)
-	if err := b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, url), optionButtons(options)); err != nil {
-		return err
+func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
+	if trip.State != models.Searching && trip.State != models.BookingState && trip.State != models.AwaitingApproval && trip.State != models.Booked {
+		return b.say(ctx, trip.GroupID, "I'll send the live search page after the group finalizes the plan.", nil)
 	}
-	if url != "" {
-		var err error
-		trip, err = b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"shared_dashboard": true})
-		if err != nil {
-			return err
-		}
+	return b.shareLiveSearch(ctx, trip, "")
+}
+
+func (b *Brain) postOptions(ctx context.Context, trip *models.Trip, intro string, options []models.Option) error {
+	if err := b.say(ctx, trip.GroupID, formatting.OptionsMessage(intro, options, trip.ID, ""), optionButtons(options)); err != nil {
+		return err
 	}
 	return b.pollOptions(ctx, trip, options)
 }
 
 func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen models.Option, itin map[string]any, people []models.Participant) error {
-	url := b.dashboardOnce(ctx, trip)
+	url := b.tripPageURL(ctx, trip, "")
 	if err := b.say(ctx, trip.GroupID, formatting.SummaryMessage(chosen, itin, people, trip.ID, url),
 		[]messaging.Button{{Label: "Book it", Payload: "✅"}, {Label: "Back", Payload: "❌"}}); err != nil {
 		return err
@@ -494,6 +477,13 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	}
 	kind := trip.LastPoll
 	low := strings.ToLower(selected)
+
+	if kind == "finalize" || strings.Contains(low, "search flights") {
+		if strings.Contains(low, "yes") || strings.Contains(low, "search") {
+			return b.startTravelSearch(ctx, trip)
+		}
+		return b.say(ctx, trip.GroupID, "Okay, still planning. Tell me what to change and I'll update the summary.", nil)
+	}
 
 	if trip.State == models.AwaitingChoice {
 		if opt := matchOptionFromLabel(selected, trip.Options); opt != nil {

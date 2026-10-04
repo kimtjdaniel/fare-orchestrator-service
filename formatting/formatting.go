@@ -249,6 +249,86 @@ func AdvisorItinerary(planned map[string]any) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
+func PlanConfirm(trip *models.Trip) string {
+	if trip == nil {
+		return "I don't have a plan to finalize yet."
+	}
+	var lines []string
+	dest := strings.TrimSpace(trip.Destination)
+	if dest == "" {
+		if o := trip.ChosenOption(); o != nil {
+			dest = o.Destination
+		}
+	}
+	if dest == "" {
+		dest = "this trip"
+	}
+	head := dest
+	embark, retDate := trip.EmbarkingDate, trip.ReturningDate
+	if o := trip.ChosenOption(); o != nil {
+		if embark == "" {
+			embark, retDate = o.EmbarkingDate, o.ReturningDate
+		}
+	}
+	if embark != "" {
+		head += ", " + Dates(embark, retDate)
+	}
+	lines = append(lines, "Here's the plan to finalize:", head+".")
+	if origin := strings.TrimSpace(trip.Origin); origin != "" {
+		lines = append(lines, "Flying out of "+origin+".")
+	}
+	if trip.DurationNights > 0 {
+		lines = append(lines, fmt.Sprintf("%d nights.", trip.DurationNights))
+	}
+	var names []string
+	payer := ""
+	for _, p := range trip.Participants {
+		name := strings.TrimSpace(p.WhatsAppName)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+		if p.Payer {
+			payer = name
+		}
+	}
+	if len(names) > 0 {
+		lines = append(lines, "Going: "+strings.Join(names, ", ")+".")
+	}
+	if payer == "" {
+		payer = strings.TrimSpace(trip.PayerName)
+	}
+	if payer != "" {
+		lines = append(lines, payer+" is covering the group spend, then you settle up.")
+	} else {
+		lines = append(lines, "Payer not chosen yet — we can pick that before booking.")
+	}
+	if note := strings.TrimSpace(trip.BudgetNote); note != "" {
+		lines = append(lines, "Budget: "+note+".")
+	}
+	if act := strings.TrimSpace(trip.ActivityDescription); act != "" {
+		lines = append(lines, "Days: "+act)
+	}
+	if food := strings.TrimSpace(trip.CulinaryDescription); food != "" {
+		lines = append(lines, "Food: "+food)
+	}
+	if trip.CostPerPerson != nil {
+		lines = append(lines, "Rough travel budget about "+Money(trip.CostPerPerson)+" each until I search real fares.")
+	} else {
+		lines = append(lines, "Flight and hotel prices are estimates until I search for real.")
+	}
+	lines = append(lines, "")
+	if trip.Itinerary != nil {
+		if advisor, _ := trip.Itinerary["advisor"].(map[string]any); advisor != nil {
+			if days := AdvisorItinerary(advisor); days != "" {
+				lines = append(lines, days)
+			}
+		}
+	}
+	lines = append(lines, "", "Can we finalize this? Vote yes and I'll search real flights and hotels, and send the live page.")
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 func LockedTravel(trip *models.Trip) string {
 	return LockedStatus(trip)
 }
