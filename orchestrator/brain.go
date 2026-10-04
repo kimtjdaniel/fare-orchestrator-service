@@ -44,6 +44,7 @@ var (
 	prefFactRe  = regexp.MustCompile(`(?i)(available|can'?t|cannot|busy|flying|schedule|dates|from )`)
 	itineraryAskRe = regexp.MustCompile(`(?i)(itinerar|day[- ]?by[- ]?day|day[- ]?to[- ]?day|each day|every day|detailed (?:\w+\s+){0,3}plan|plan (?:for )?each day|things to do|what to visit|go visit|full \d+\s*-?\s*days?|day\s*\d+|neighbourhood|neighborhood|hidden gem)`)
 	restaurantAskRe = regexp.MustCompile(`(?i)\b(restaurants?|where to eat|places to eat|dinner spots?|food recs?|what (should|can|do) we eat|best (pizza|pasta|eats)|wine bars?|trattoria|where (?:are|should) we (?:eat|dine))\b`)
+	restaurantListRe = regexp.MustCompile(`(?i)\b(top\s*\d+\s*restaurants?|list(?:\s+\w+){0,8}\s+restaurants?|restaurants?\s+by\s+(?:stars?|rating|maps)|best\s+restaurants?)\b`)
 	introAskRe     = regexp.MustCompile(`(?i)\b(introduce yourself|intro yourself|who are you|what (can|do) you do|what are you capable of|your capabilities|what can fare do)\b`)
 	greetingOnlyRe = regexp.MustCompile(`(?i)^(?:@\S+\s+)*(?:hi|hey|hello|yo|sup|what'?s up|help|you there)?[\s!.,?]*$`)
 	atTokenRe      = regexp.MustCompile(`(?i)@\S+`)
@@ -193,10 +194,16 @@ func snapNamesToRoster(people []models.Participant, roster []models.GroupMember)
 }
 
 func looksLikeItineraryAsk(text string) bool {
+	if restaurantListRe.MatchString(text) {
+		return false
+	}
 	return itineraryAskRe.MatchString(text)
 }
 
 func looksLikeRestaurantAsk(text string) bool {
+	if restaurantListRe.MatchString(text) {
+		return true
+	}
 	if looksLikeItineraryAsk(text) {
 		return false
 	}
@@ -442,10 +449,21 @@ func (b *Brain) handleLocked(ctx context.Context, m models.IncomingMessage) {
 
 	if err := b.handle(ctx, m); err != nil {
 		slog.Error("failed handling message", "group_id", m.GroupID, "err", err)
-		if sayErr := b.say(ctx, m.GroupID, "Something broke on my end. Try that again.", nil); sayErr != nil {
+		if sayErr := b.say(ctx, m.GroupID, geminiFailTalk(err), nil); sayErr != nil {
 			slog.Error("failed to send oops message", "group_id", m.GroupID, "err", sayErr)
 		}
 	}
+}
+
+func geminiFailTalk(err error) string {
+	if err == nil {
+		return "Something broke on my end. Try that again."
+	}
+	s := err.Error()
+	if strings.Contains(s, "503") || strings.Contains(s, "429") || strings.Contains(strings.ToLower(s), "high demand") {
+		return "Google's model is slammed right now. Ping me again in a minute and I'll pick it up."
+	}
+	return "Something broke on my end. Try that again."
 }
 
 func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {

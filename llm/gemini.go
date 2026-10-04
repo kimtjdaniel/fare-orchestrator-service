@@ -52,6 +52,8 @@ func (g *GeminiLLM) modelsToTry() []string {
 	}
 	add(g.Model)
 	add("gemini-3.1-flash-lite")
+	add("gemini-2.5-flash")
+	add("gemini-2.0-flash")
 	return out
 }
 
@@ -133,7 +135,7 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 
 	var lastErr error
 	for _, model := range g.modelsToTry() {
-		for attempt := 1; attempt <= 2; attempt++ {
+		for attempt := 1; attempt <= 4; attempt++ {
 			endpoint := fmt.Sprintf("%s/%s:generateContent?key=%s", geminiAPIBase, model, url.QueryEscape(g.APIKey))
 			httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 			if err != nil {
@@ -145,11 +147,11 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 			if err != nil {
 				lastErr = err
 				slog.Warn("gemini request failed", "kind", kind, "model", model, "attempt", attempt, "err", err)
-				if attempt < 2 {
+				if attempt < 4 {
 					select {
 					case <-ctx.Done():
 						return nil, ctx.Err()
-					case <-time.After(500 * time.Millisecond):
+					case <-time.After(time.Duration(attempt) * time.Second):
 					}
 					continue
 				}
@@ -165,12 +167,15 @@ func (g *GeminiLLM) generate(ctx context.Context, kind string, body map[string]a
 				_ = json.Unmarshal(raw, &apiErr)
 				lastErr = fmt.Errorf("gemini api %d (%s): %s", httpResp.StatusCode, model, apiErr.Error.Message)
 				slog.Warn("gemini busy, retrying", "kind", kind, "model", model, "attempt", attempt, "status", httpResp.StatusCode)
-				select {
-				case <-ctx.Done():
-					return nil, ctx.Err()
-				case <-time.After(400 * time.Millisecond):
+				if attempt < 4 {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(time.Duration(attempt*2) * time.Second):
+					}
+					continue
 				}
-				continue
+				break
 			}
 			if httpResp.StatusCode >= 400 {
 				var apiErr geminiError

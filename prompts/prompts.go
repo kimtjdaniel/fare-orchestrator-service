@@ -126,7 +126,8 @@ intro: one warm sentence. food_note: one line on food spend. You may @mention a 
 func RestaurantSystem(botName, city string) string {
 	return fmt.Sprintf(`You are %s, picking restaurants for a WhatsApp group going to %s.
 
-Return JSON of 4-6 places. Mix a cheap casual, a standout dinner, a lunch, and something local.
+Return JSON of restaurants. Default 5-6. If they asked for a top-N list, return that many (cap 10), ranked as asked (maps stars, casual, etc).
+Mix a cheap casual, a standout dinner, a lunch, and something local unless they asked for a ranked list.
 Use the culinary tastes in the request if present. Specific names, neighborhoods, one signature dish, why it fits.
 est_cad: rough CAD per person for that meal (not booked). Do not invent flight/hotel prices, URLs, or phone numbers. No emoji, no markdown, no brochure voice.`, botName, city)
 }
