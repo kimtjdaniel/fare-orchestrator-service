@@ -380,7 +380,7 @@ func shouldBatchMention(m models.IncomingMessage) bool {
 	if choiceOnlyRe.MatchString(m.Text) || approveOnlyRe.MatchString(m.Text) || rejectOnlyRe.MatchString(m.Text) {
 		return false
 	}
-	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) {
+	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) || looksLikeDashboardAsk(m.Text) {
 		return false
 	}
 	return true
@@ -528,6 +528,9 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		stop, trip, err := b.maybeIntroduce(ctx, trip, m)
 		if err != nil || stop {
 			return err
+		}
+		if m.Tagged && looksLikeDashboardAsk(m.Text) {
+			return b.shareDashboard(ctx, trip)
 		}
 		if m.Tagged && looksLikeRestaurantAsk(m.Text) {
 			return b.writeRestaurantPlan(ctx, trip, m)
@@ -1032,7 +1035,7 @@ func (b *Brain) interpret(ctx context.Context, trip *models.Trip, m models.Incom
 	if looksLikeIntroAsk(m.Text) || looksLikeOnlyGreeting(m.Text) {
 		return map[string]any{"intent": "other"}, nil
 	}
-	if looksLikeItineraryAsk(m.Text) || looksLikeRestaurantAsk(m.Text) {
+	if looksLikeItineraryAsk(m.Text) || looksLikeRestaurantAsk(m.Text) || looksLikeDashboardAsk(m.Text) {
 		return map[string]any{"intent": "question"}, nil
 	}
 	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeFoodMoneyAsk(m.Text) {
@@ -1187,7 +1190,7 @@ func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.
 		}
 	}
 	onlyIntro := looksLikeIntroAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
-		!looksLikeStatusAsk(m.Text) && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants)
+		!looksLikeStatusAsk(m.Text) && !looksLikeDashboardAsk(m.Text) && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants)
 	if onlyIntro || looksLikeOnlyGreeting(m.Text) {
 		return true, trip, nil
 	}
@@ -1196,6 +1199,12 @@ func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.
 
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {
 	did := false
+	if looksLikeDashboardAsk(m.Text) {
+		if err := b.shareDashboard(ctx, trip); err != nil {
+			return true, err
+		}
+		did = true
+	}
 	if looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeFoodMoneyAsk(m.Text) {
 		if err := b.postLockedStatus(ctx, trip); err != nil {
 			return true, err

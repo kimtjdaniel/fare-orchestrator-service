@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	dashboardAskRe = regexp.MustCompile(`(?i)\b(dashboard|trip page|localhost|send (me |us )?(the )?(url|link)|details page|the link again)\b`)
+	dashboardAskRe = regexp.MustCompile(`(?i)(dashboard|session link|live session|trip page|details page|the link again|send (me |us )?(the )?(url|link)|localhost)`)
 	stuckRe        = regexp.MustCompile(`(?i)(can'?t decide|cannot decide|undecided|we'?re stuck|help us pick|make a poll|start a poll|put it (in )?a poll|flip a coin)`)
 	wantBudgetRe   = regexp.MustCompile(`(?i)\bbudget\b`)
 	wantDatesRe    = regexp.MustCompile(`(?i)\b(dates?|weekend|when (do|should) we|calendar)\b`)
@@ -52,11 +52,19 @@ func (b *Brain) dashboardOnce(trip *models.Trip) string {
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
-	url := strings.TrimSpace(b.Config.DashboardURL)
-	if url == "" {
+	base := ""
+	if b.Config != nil {
+		base = strings.TrimSpace(b.Config.DashboardURL)
+	}
+	if base == "" {
 		return b.say(ctx, trip.GroupID, "I don't have a trip page set up to send.", nil)
 	}
-	if err := b.say(ctx, trip.GroupID, "Here: "+formatting.DashboardLink(url, trip.ID), nil); err != nil {
+	link := formatting.DashboardLink(base, trip.GroupID)
+	if link == "" {
+		link = formatting.DashboardLink(base, trip.ID)
+	}
+	text := "This group's live trip: " + link
+	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
 		return err
 	}
 	_, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"shared_dashboard": true})
