@@ -601,6 +601,12 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 		"agent_id": m.AgentID,
 	})
 
+	if trip != nil {
+		handled, err := b.dispatchTurn(ctx, trip, m, sentAt)
+		if err != nil || handled {
+			return err
+		}
+	}
 	if trip == nil && m.Tagged && looksLikeNewTripRequest(m.Text) {
 		return b.startNewTrip(ctx, nil, m, sentAt)
 	}
@@ -1349,30 +1355,47 @@ func (b *Brain) maybeIntroduce(ctx context.Context, trip *models.Trip, m models.
 	if trip == nil || !m.Tagged {
 		return false, trip, nil
 	}
-	force := looksLikeIntroAsk(m.Text)
-	if !force && trip.Introduced {
+	// The capability list is only for "who are you" / "introduce yourself".
+	// A reply like "it'd be me and Brandon" is the trip, not a greeting.
+	if !looksLikeIntroAsk(m.Text) {
+		if !trip.Introduced {
+			var err error
+			trip, err = b.markIntroduced(ctx, trip)
+			if err != nil {
+				return true, trip, err
+			}
+		}
 		return false, trip, nil
 	}
 	if err := b.say(ctx, trip.GroupID, formatting.IntroMessage(b.Config.BotName), nil); err != nil {
 		return true, trip, err
 	}
-	if !trip.Introduced {
-		updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"introduced": true})
-		if err != nil {
-			return true, trip, err
-		}
-		if updated != nil {
-			trip = updated
-		} else {
-			trip.Introduced = true
-		}
+	var err error
+	trip, err = b.markIntroduced(ctx, trip)
+	if err != nil {
+		return true, trip, err
 	}
-	onlyIntro := looksLikeIntroAsk(m.Text) && !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
+	onlyIntro := !looksLikeRestaurantAsk(m.Text) && !looksLikeItineraryAsk(m.Text) &&
 		!looksLikeStatusAsk(m.Text) && !looksLikeDashboardAsk(m.Text) && !looksLikePrefUpdate(m.Text, trip.Participants, m.Participants)
-	if onlyIntro || looksLikeOnlyGreeting(m.Text) {
+	if onlyIntro {
 		return true, trip, nil
 	}
 	return false, trip, nil
+}
+
+func (b *Brain) markIntroduced(ctx context.Context, trip *models.Trip) (*models.Trip, error) {
+	if trip == nil || trip.Introduced {
+		return trip, nil
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"introduced": true})
+	if err != nil {
+		return trip, err
+	}
+	if updated != nil {
+		return updated, nil
+	}
+	trip.Introduced = true
+	return trip, nil
 }
 
 func (b *Brain) replyToAsks(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (bool, error) {

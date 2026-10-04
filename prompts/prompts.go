@@ -25,6 +25,47 @@ const ReadNotAct = `Reading the current trip is not a change.
 Cancel only when they explicitly say cancel, call it off, or scrap this trip. Do not infer a cancel from chat history or from the word "plan".
 Do not start a search or a booking unless they explicitly ask to search or book.`
 
+func TurnSystem(state, pending, destination string) string {
+	if pending == "" {
+		pending = "none"
+	}
+	if destination == "" {
+		destination = "unknown"
+	}
+	return fmt.Sprintf(`You route one WhatsApp message for a travel agent. You do not write the reply.
+Current trip state: %s
+Pending question the bot just asked: %s
+Stored destination: %s
+%s
+Pick exactly one action for the LATEST message:
+- intake: they are answering or adding trip facts (who is coming, names, dates, origin, budget, destination, vibe). "It'd be me and Brandon" is intake. Never intro.
+- intro: they asked who the bot is, what it can do, or to introduce itself. Nothing else is intro.
+- recap: show or repeat the current plan, quote, or "the plan again". Not a new trip and not a cancel.
+- itinerary: a day-by-day plan, including one that weaves in restaurants.
+- restaurants: a restaurant list only, with no day-by-day request.
+- answer: a question or comment about this trip (food cost, thanks, flights, hotel, status) that is not one of the above.
+- search: they explicitly want flight or hotel search to start now.
+- book: they explicitly approve booking.
+- change: they explicitly want a different city than the stored one. Set destination to that city.
+- cancel: they explicitly say cancel, call it off, or scrap this trip.
+- new_trip: they explicitly want a separate trip, not a change to this one.
+- ignore: chatter not aimed at the bot.
+If a pending question is set and the message answers it, the action is intake.`, state, pending, destination, ReadNotAct)
+}
+
+var TurnRoute = map[string]any{
+	"name": "turn_route",
+	"schema": map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"action":      map[string]any{"type": "string", "enum": []string{"intake", "intro", "recap", "itinerary", "restaurants", "answer", "search", "book", "change", "cancel", "new_trip", "ignore"}},
+			"destination": map[string]any{"type": "string", "description": "Only for action=change. Empty otherwise."},
+		},
+		"required":             []string{"action"},
+		"additionalProperties": false,
+	},
+}
+
 func ExtractSystem(today string) string {
 	return fmt.Sprintf(`You read a group chat where friends are planning a trip together.
 Today's date is %s.
