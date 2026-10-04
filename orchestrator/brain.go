@@ -462,7 +462,10 @@ func (b *Brain) handle(ctx context.Context, m models.IncomingMessage) error {
 
 	if trip != nil {
 		b.rememberRoster(ctx, trip, m)
-		trip, _ = b.capturePayer(ctx, trip, m)
+		trip, err = b.capturePayer(ctx, trip, m)
+		if err != nil {
+			return err
+		}
 	}
 
 	if trip == nil {
@@ -878,7 +881,7 @@ func (b *Brain) onReply(ctx context.Context, trip *models.Trip, m models.Incomin
 		}
 		return b.selectOption(ctx, trip, num)
 	case kind == "approve" && trip.State == models.AwaitingApproval:
-		return b.book(ctx, trip, m.SenderName)
+		return b.requestBooking(ctx, trip, m.SenderName)
 	case kind == "reject" && trip.State == models.AwaitingApproval:
 		trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
 		if err != nil {
