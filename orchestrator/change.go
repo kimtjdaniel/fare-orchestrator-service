@@ -136,7 +136,7 @@ func (b *Brain) maybeGateDetails(ctx context.Context, trip *models.Trip, m model
 	if trip == nil || strings.TrimSpace(m.Text) == "" {
 		return false, nil
 	}
-	if looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) || looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeHotelAsk(m.Text) {
+	if looksLikeItineraryAsk(m.Text) || looksLikeDashboardAsk(m.Text) || looksLikeStuck(m.Text) || looksLikeStatusAsk(m.Text) || looksLikeFlightAsk(m.Text) || looksLikeHotelAsk(m.Text) || looksLikeRestaurantAsk(m.Text) || looksLikeIntroAsk(m.Text) || looksLikeWhoPays(m.Text) {
 		return false, nil
 	}
 	change := b.proposedLockedChange(trip, m.Text)
@@ -346,6 +346,7 @@ func (b *Brain) reopenAndPlan(ctx context.Context, trip *models.Trip, m models.I
 		"history_start":           cut,
 		"asked_dates":             false,
 		"asked_origin":            false,
+		"introduced":              false,
 	}
 	if h.Destination != "" {
 		clear["destination"] = h.Destination

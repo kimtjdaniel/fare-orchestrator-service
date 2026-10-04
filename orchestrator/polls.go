@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	dashboardAskRe = regexp.MustCompile(`(?i)\b(dashboard|trip page|localhost|send (me |us )?(the )?(url|link)|details page|the link again)\b`)
+	dashboardAskRe = regexp.MustCompile(`(?i)(dashboard|session link|live session|trip page|details page|the link again|send (me |us )?(the )?(url|link)|localhost)`)
 	stuckRe        = regexp.MustCompile(`(?i)(can'?t decide|cannot decide|undecided|we'?re stuck|help us pick|make a poll|start a poll|put it (in )?a poll|flip a coin)`)
 	wantBudgetRe   = regexp.MustCompile(`(?i)\bbudget\b`)
 	wantDatesRe    = regexp.MustCompile(`(?i)\b(dates?|weekend|when (do|should) we|calendar)\b`)
@@ -55,11 +55,19 @@ func (b *Brain) dashboardOnce(trip *models.Trip) string {
 }
 
 func (b *Brain) shareDashboard(ctx context.Context, trip *models.Trip) error {
-	url := strings.TrimSpace(b.Config.DashboardURL)
-	if url == "" {
+	base := ""
+	if b.Config != nil {
+		base = strings.TrimSpace(b.Config.DashboardURL)
+	}
+	if base == "" {
 		return b.say(ctx, trip.GroupID, "I don't have a trip page set up to send.", nil)
 	}
-	if err := b.say(ctx, trip.GroupID, "Here: "+formatting.DashboardLink(url, trip.ID), nil); err != nil {
+	link := formatting.DashboardLink(base, trip.GroupID)
+	if link == "" {
+		link = formatting.DashboardLink(base, trip.ID)
+	}
+	text := "This group's live trip: " + link
+	if err := b.say(ctx, trip.GroupID, text, nil); err != nil {
 		return err
 	}
 	_, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"shared_dashboard": true})
@@ -95,7 +103,7 @@ func (b *Brain) postSummary(ctx context.Context, trip *models.Trip, chosen model
 	if err := b.sendPoll(ctx, trip.GroupID, "Book this one?", []string{"Yes, book it", "Show the other options"}, "approve", trip.ID); err != nil {
 		return err
 	}
-	return b.askWhoPays(ctx, trip, people)
+	return b.maybeAskPayer(ctx, trip, false)
 }
 
 func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []models.Participant) error {
@@ -107,6 +115,122 @@ func (b *Brain) askWhoPays(ctx context.Context, trip *models.Trip, people []mode
 		names[i] = p.WhatsAppName
 	}
 	return b.sendPoll(ctx, trip.GroupID, "Who's paying?", names, "payer", trip.ID)
+}
+
+func (b *Brain) maybeAskPayer(ctx context.Context, trip *models.Trip, force bool) error {
+	if hasDesignatedPayer(trip.Participants) {
+		return nil
+	}
+	if trip.AskedPayer && !force {
+		return nil
+	}
+	if err := b.askWhoPays(ctx, trip, trip.Participants); err != nil {
+		return err
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"asked_payer": true})
+	if err != nil {
+		return err
+	}
+	if updated != nil {
+		*trip = *updated
+	}
+	return nil
+}
+
+// requestBooking is the single entry point for "yes, book it" — a vote, a tap, or a typed yes.
+// Booking charges real money against whoever the split names as payer, so it refuses to proceed
+// until a payer is designated; otherwise it parks the approval in PendingApprover and asks.
+func (b *Brain) requestBooking(ctx context.Context, trip *models.Trip, approver string) error {
+	if hasDesignatedPayer(trip.Participants) {
+		return b.book(ctx, trip, approver)
+	}
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"pending_approver": approver})
+	if err != nil {
+		return err
+	}
+	if updated != nil {
+		trip = updated
+	}
+	if err := b.say(ctx, trip.GroupID, "Before I book this — who's covering it?", nil); err != nil {
+		return err
+	}
+	return b.maybeAskPayer(ctx, trip, true)
+}
+
+// resumeBookingIfPending finishes a booking that was approved before a payer was designated,
+// once PendingApprover is set — see requestBooking.
+func (b *Brain) resumeBookingIfPending(ctx context.Context, trip *models.Trip, pendingApprover string) error {
+	if pendingApprover == "" {
+		return nil
+	}
+	return b.book(ctx, trip, pendingApprover)
+}
+
+func (b *Brain) capturePayer(ctx context.Context, trip *models.Trip, m models.IncomingMessage) (*models.Trip, error) {
+	if !looksLikeIPay(m.Text) || hasDesignatedPayer(trip.Participants) {
+		return trip, nil
+	}
+	match := matchName(m.SenderName, trip.Participants)
+	if match == nil {
+		return trip, nil
+	}
+	people := trip.Participants
+	for i := range people {
+		people[i].Payer = people[i].WhatsAppName == match.WhatsAppName
+	}
+	pendingApprover := strings.TrimSpace(trip.PendingApprover)
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
+		"participants":     people,
+		"payer_name":       match.WhatsAppName,
+		"asked_payer":      true,
+		"pending_approver": "",
+	})
+	if err != nil {
+		return trip, err
+	}
+	if updated != nil {
+		trip = updated
+	}
+	if pendingApprover != "" {
+		if err := b.say(ctx, trip.GroupID, match.WhatsAppName+" is on the hook for this one. 💳", nil); err != nil {
+			return trip, err
+		}
+		if err := b.resumeBookingIfPending(ctx, trip, pendingApprover); err != nil {
+			return trip, err
+		}
+	}
+	return trip, nil
+}
+
+func (b *Brain) applyPayerVote(ctx context.Context, trip *models.Trip, vote models.PollVote, selected string) error {
+	if selected == "" {
+		return nil
+	}
+	match := matchName(selected, trip.Participants)
+	if match == nil {
+		return b.say(ctx, trip.GroupID, "Didn't catch who that was — tap the poll option again.", nil)
+	}
+	people := trip.Participants
+	for i := range people {
+		people[i].Payer = people[i].WhatsAppName == match.WhatsAppName
+	}
+	pendingApprover := strings.TrimSpace(trip.PendingApprover)
+	updated, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{
+		"participants":     people,
+		"payer_name":       match.WhatsAppName,
+		"asked_payer":      true,
+		"pending_approver": "",
+	})
+	if err != nil {
+		return err
+	}
+	if updated != nil {
+		trip = updated
+	}
+	if err := b.say(ctx, trip.GroupID, match.WhatsAppName+" is on the hook for this one. 💳", nil); err != nil {
+		return err
+	}
+	return b.resumeBookingIfPending(ctx, trip, pendingApprover)
 }
 
 func hasDesignatedPayer(people []models.Participant) bool {
@@ -320,6 +444,9 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	if trip == nil {
 		return nil
 	}
+	if strings.Contains(strings.ToLower(vote.PollName), "paying") {
+		return b.applyPayerVote(ctx, trip, vote, selected)
+	}
 	if trip.PendingChange != nil || trip.LastPoll == "change" {
 		return b.handleChangeVote(ctx, trip, vote, selected)
 	}
@@ -353,7 +480,7 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 	}
 	if trip.State == models.AwaitingApproval {
 		if strings.Contains(low, "yes") || strings.Contains(low, "book") {
-			return b.book(ctx, trip, vote.VoterName)
+			return b.requestBooking(ctx, trip, vote.VoterName)
 		}
 		if strings.Contains(low, "other") || strings.Contains(low, "back") {
 			trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
@@ -376,7 +503,7 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 		return b.selectOption(ctx, trip, opt.Position)
 	case "approve":
 		if strings.Contains(low, "yes") || strings.Contains(low, "book") {
-			return b.book(ctx, trip, vote.VoterName)
+			return b.requestBooking(ctx, trip, vote.VoterName)
 		}
 		if trip.State == models.AwaitingApproval {
 			trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)
@@ -444,19 +571,6 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 		return b.plan(ctx, trip, "Keep it in CAD. Group budget: "+selected, incoming)
 	case "vibe":
 		return b.plan(ctx, trip, "They want a "+selected+" trip", incoming)
-	case "payer":
-		match := matchName(selected, trip.Participants)
-		if match == nil {
-			return b.say(ctx, trip.GroupID, "Didn't catch who that was — tap the poll option again.", nil)
-		}
-		people := trip.Participants
-		for i := range people {
-			people[i].Payer = people[i].WhatsAppName == match.WhatsAppName
-		}
-		if _, err := b.Store.UpdateTrip(ctx, trip.ID, map[string]any{"participants": people}); err != nil {
-			return err
-		}
-		return b.say(ctx, trip.GroupID, match.WhatsAppName+" is on the hook for this one. 💳", nil)
 	case "flights":
 		direct := strings.Contains(low, "direct")
 		if trip.FlightsLocked {
@@ -481,7 +595,7 @@ func (b *Brain) handlePollVote(ctx context.Context, vote models.PollVote) error 
 		}
 		if trip.State == models.AwaitingApproval {
 			if strings.Contains(low, "yes") || strings.Contains(low, "book") {
-				return b.book(ctx, trip, vote.VoterName)
+				return b.requestBooking(ctx, trip, vote.VoterName)
 			}
 			if strings.Contains(low, "other") || strings.Contains(low, "back") {
 				trip, err = store.SetState(ctx, b.Store, trip.ID, models.AwaitingChoice, nil)

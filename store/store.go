@@ -29,6 +29,7 @@ type Store interface {
 	// CreateTrip gets-or-creates the group's singleton trip document.
 	CreateTrip(ctx context.Context, groupID, groupName string) (*models.Trip, error)
 	GetTrip(ctx context.Context, tripID string) (*models.Trip, error)
+	ListTrips(ctx context.Context) ([]*models.Trip, error)
 	// ResetTrip reuses the same document for a new trip cycle: clears the prior round's fields and
 	// moves back to Collecting, so old chat history doesn't leak into the new extraction.
 	ResetTrip(ctx context.Context, tripID, groupName string) (*models.Trip, error)
@@ -84,7 +85,8 @@ var allowedTripFields = map[string]bool{
 	"origin": true, "destination": true, "destination_airport": true,
 	"activity_description": true, "culinary_description": true, "duration_nights": true,
 	"cost_per_person": true, "embarking_date": true, "returning_date": true,
-	"asked_origin": true, "asked_dates": true,
+	"asked_origin": true, "asked_dates": true, "asked_payer": true, "payer_name": true,
+	"introduced": true,
 	"shared_dashboard": true, "last_poll": true,
 	"roster": true, "budget_note": true, "flights_locked": true, "pending_change": true,
 }
@@ -163,6 +165,12 @@ func applyTripFields(trip *models.Trip, fields map[string]any) error {
 			trip.AskedOrigin, _ = v.(bool)
 		case "asked_dates":
 			trip.AskedDates, _ = v.(bool)
+		case "asked_payer":
+			trip.AskedPayer, _ = v.(bool)
+		case "payer_name":
+			trip.PayerName, _ = v.(string)
+		case "introduced":
+			trip.Introduced, _ = v.(bool)
 		case "shared_dashboard":
 			trip.SharedDashboard, _ = v.(bool)
 		case "last_poll":

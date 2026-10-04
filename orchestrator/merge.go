@@ -59,6 +59,15 @@ func overlayParticipant(base, neu models.Participant) models.Participant {
 	if neu.Origin != "" {
 		base.Origin = neu.Origin
 	}
+	if neu.LegalName != "" {
+		base.LegalName = neu.LegalName
+	}
+	if neu.DateOfBirth != "" {
+		base.DateOfBirth = neu.DateOfBirth
+	}
+	if neu.PassportNumber != "" {
+		base.PassportNumber = neu.PassportNumber
+	}
 	if neu.GeneralPreferences.DurationNights != 0 {
 		base.GeneralPreferences.DurationNights = neu.GeneralPreferences.DurationNights
 	}

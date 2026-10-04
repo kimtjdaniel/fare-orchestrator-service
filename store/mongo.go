@@ -142,6 +142,24 @@ func (s *MongoStore) GetTrip(ctx context.Context, tripID string) (*models.Trip, 
 	return &trip, nil
 }
 
+func (s *MongoStore) ListTrips(ctx context.Context) ([]*models.Trip, error) {
+	cur, err := s.trips.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "updated_at", Value: -1}}))
+	if err != nil {
+		return nil, err
+	}
+	defer cur.Close(ctx)
+	var rows []models.Trip
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]*models.Trip, 0, len(rows))
+	for i := range rows {
+		normalizeTrip(&rows[i], rows[i].ID)
+		out = append(out, &rows[i])
+	}
+	return out, nil
+}
+
 func normalizeTrip(trip *models.Trip, fallbackID string) {
 	if trip.ID == "" {
 		trip.ID = fallbackID
